@@ -8,6 +8,7 @@ Owned by the llm_connector package (not the consumer app config).
 from __future__ import annotations
 
 import logging
+import os
 import time
 
 import mysql.connector
@@ -27,6 +28,7 @@ def _get_connect_kwargs():
     kwargs = dict(cfg)
     kwargs["charset"] = "utf8mb4"
     kwargs["use_pure"] = True
+    kwargs["connection_timeout"] = int(os.getenv("LLM_DB_CONNECT_TIMEOUT", "10"))
     return kwargs
 
 

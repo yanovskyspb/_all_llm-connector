@@ -53,6 +53,20 @@ class MysqlLlmAdapter:
             function_key=function_key,
         )
 
+    def load_routes_overview(
+        self,
+        cursor: Any,
+        *,
+        project_code: str,
+    ) -> List[RouteRow]:
+        return self._storage.load_routes_overview(
+            cursor,
+            project_code=project_code,
+        )
+
+    def load_projects(self, cursor: Any) -> List[dict]:
+        return self._storage.load_projects(cursor)
+
     def insert_log(self, cursor: Any, log: LogInsert) -> None:
         self._storage.insert_log(cursor, log)
 

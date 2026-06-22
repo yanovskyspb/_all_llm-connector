@@ -128,6 +128,33 @@ WHERE pr.code = %s
 ORDER BY r.model_slot ASC, r.sort_order ASC, r.id ASC
 """
 
+_ROUTE_OVERVIEW_SELECT = """
+SELECT
+  r.id, r.project_id, r.caller_script, r.function_key, r.model_slot,
+  r.primary_provider_id, r.primary_model, r.same_provider_fallback_model,
+  r.fallback_provider_id, r.fallback_model, r.error_streak_threshold,
+  r.max_failures, r.failure_count, r.is_suspended, r.temperature, r.max_tokens,
+  r.timeout_sec, r.max_retries, r.retry_delay_sec, r.response_format,
+  r.verify_ssl, r.api_key_env, r.is_active,
+  p.id AS provider_id,
+  p.code AS provider_code,
+  p.base_url AS provider_base_url,
+  p.shared_api_key_env AS provider_shared_api_key_env,
+  p.default_verify_ssl AS provider_default_verify_ssl,
+  p.extra_json AS provider_extra_json,
+  fp.code AS fb_provider_code,
+  fp.base_url AS fb_provider_base_url,
+  fp.shared_api_key_env AS fb_provider_shared_api_key_env,
+  fp.default_verify_ssl AS fb_provider_default_verify_ssl
+FROM `{routes}` r
+JOIN `{projects}` pr ON pr.id = r.project_id
+JOIN `{providers}` p ON p.id = r.primary_provider_id
+LEFT JOIN `{providers}` fp ON fp.id = r.fallback_provider_id
+WHERE pr.code = %s
+  AND r.is_active = 1
+ORDER BY r.caller_script ASC, r.function_key ASC, r.model_slot ASC, r.sort_order ASC, r.id ASC
+"""
+
 
 class MysqlPrimaryStorage:
     def __init__(self, tables: LlmTableNames | None = None):
@@ -173,6 +200,28 @@ class MysqlPrimaryStorage:
         cursor.execute(sql, (project_code, caller_script, fk))
         rows = cursor.fetchall() or []
         return [_row_to_route(r) for r in rows]
+
+    def load_routes_overview(
+        self,
+        cursor: Any,
+        *,
+        project_code: str,
+    ) -> List[RouteRow]:
+        sql = _ROUTE_OVERVIEW_SELECT.format(
+            routes=self.tables.routes,
+            projects=self.tables.projects,
+            providers=self.tables.providers,
+        )
+        cursor.execute(sql, (project_code,))
+        rows = cursor.fetchall() or []
+        return [_row_to_route(r) for r in rows]
+
+    def load_projects(self, cursor: Any) -> List[dict]:
+        t = self.tables.projects
+        cursor.execute(
+            f"SELECT id, code, name FROM `{t}` ORDER BY code ASC",
+        )
+        return list(cursor.fetchall() or [])
 
     def insert_log(self, cursor: Any, log: LogInsert) -> None:
         t = self.tables.request_logs

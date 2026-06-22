@@ -14,7 +14,7 @@ def get_llm_db_config() -> dict:
     Falls back to DB_HOST / DB_USER / DB_PASSWORD only for host/credentials, never database name.
     """
     return {
-        "host": os.getenv("LLM_DB_HOST", os.getenv("DB_HOST", "192.168.170.221")),
+        "host": os.getenv("LLM_DB_HOST", os.getenv("DB_HOST", "100.75.41.14")),
         "user": os.getenv("LLM_DB_USER", os.getenv("DB_USER", "root")),
         "password": os.getenv("LLM_DB_PASSWORD", os.getenv("DB_PASSWORD", "")),
         "database": os.getenv("LLM_DB_DATABASE", "_llm_connector"),
