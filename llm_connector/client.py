@@ -12,6 +12,7 @@ import httpx
 from openai import OpenAI
 
 from llm_connector.adapter.mysql import MysqlLlmAdapter
+from llm_connector.db_connection import commit_conn
 from llm_connector.exceptions import (
     MissingApiKeyError,
     RouteNotFoundError,
@@ -175,7 +176,7 @@ def complete(
             _streak[route.id] = 0
             adapter.reset_route_failure(cursor, route.id)
             if commit:
-                cursor.connection.commit()
+                commit_conn(cursor)
             if rec_path is not None and entity_id:
                 write_slot_success(
                     rec_path,
@@ -318,7 +319,7 @@ def _call_stage(
                 ),
             )
             if commit:
-                cursor.connection.commit()
+                commit_conn(cursor)
             return CompleteResult(
                 content=text,
                 route_id=route.id,
@@ -429,7 +430,7 @@ def _log_error(
         ),
     )
     if commit:
-        cursor.connection.commit()
+        commit_conn(cursor)
 
 
 def _record_failure(
@@ -444,4 +445,4 @@ def _record_failure(
     if count >= route.max_failures:
         adapter.suspend_route(cursor, route.id, reason[:255])
     if commit:
-        cursor.connection.commit()
+        commit_conn(cursor)

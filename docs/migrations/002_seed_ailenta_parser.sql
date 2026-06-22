@@ -35,7 +35,7 @@ INSERT INTO llm_routes (
    'Headers vote model 1'),
   (@proj, 'prompts_pre_list_headers_vote.py', 'headers_vote', 2, @or, 'ibm-granite/granite-4.1-8b', 0, 120, 'json_object', 3, 5, NULL,
    'Headers vote model 2'),
-  (@proj, 'prompt_meta_extract.py', 'extract', 1, @or, 'z-ai/glm-4.5-air:free', 0, 120, NULL, 3, 5, 3001,
+  (@proj, 'prompt_meta_extract.py', 'extract', 1, @or, 'z-ai/glm-4.5-air', 0, 120, NULL, 3, 5, 3001,
    'Extract prompt from telegram raw')
 ON DUPLICATE KEY UPDATE
   primary_model = VALUES(primary_model),

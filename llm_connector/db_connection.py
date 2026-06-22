@@ -85,6 +85,17 @@ def get_cursor():
     return conn.cursor(buffered=True, dictionary=True)
 
 
+def commit_conn(cursor=None) -> None:
+    """Commit LLM DB transaction (mysql.connector cursors expose _connection, not connection)."""
+    conn = None
+    if cursor is not None:
+        conn = getattr(cursor, "connection", None) or getattr(cursor, "_connection", None)
+    if conn is None:
+        conn = get_conn()
+    if conn is not None:
+        conn.commit()
+
+
 def close_conn():
     global _conn
     if _conn:
