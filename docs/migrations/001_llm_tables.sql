@@ -1,0 +1,95 @@
+-- LLM connector schema (MVP internal)
+-- Run on target MySQL database (e.g. ailenta_parser or dedicated llm_connector DB)
+
+CREATE TABLE IF NOT EXISTS llm_projects (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  code VARCHAR(64) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_llm_projects_code (code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS llm_providers (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  code VARCHAR(64) NOT NULL,
+  base_url VARCHAR(512) NOT NULL,
+  shared_api_key_env VARCHAR(128) NOT NULL,
+  api_key_env VARCHAR(128) DEFAULT NULL COMMENT 'legacy alias; prefer shared_api_key_env',
+  default_verify_ssl TINYINT(1) NOT NULL DEFAULT 1,
+  extra_json JSON DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_llm_providers_code (code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS llm_routes (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  project_id INT NOT NULL,
+  caller_script VARCHAR(255) NOT NULL,
+  function_key VARCHAR(128) NOT NULL DEFAULT 'default',
+  model_slot INT NOT NULL DEFAULT 1,
+  primary_provider_id INT NOT NULL,
+  primary_model VARCHAR(255) NOT NULL,
+  same_provider_fallback_model VARCHAR(255) DEFAULT NULL,
+  fallback_provider_id INT DEFAULT NULL,
+  fallback_model VARCHAR(255) DEFAULT NULL,
+  error_streak_threshold INT NOT NULL DEFAULT 1,
+  max_failures INT NOT NULL DEFAULT 3,
+  failure_count INT NOT NULL DEFAULT 0,
+  is_suspended TINYINT(1) NOT NULL DEFAULT 0,
+  suspended_at DATETIME DEFAULT NULL,
+  suspend_reason VARCHAR(255) DEFAULT NULL,
+  temperature FLOAT NOT NULL DEFAULT 0.7,
+  max_tokens INT DEFAULT NULL,
+  timeout_sec INT NOT NULL DEFAULT 120,
+  max_retries INT NOT NULL DEFAULT 3,
+  retry_delay_sec INT NOT NULL DEFAULT 5,
+  response_format VARCHAR(32) DEFAULT NULL COMMENT 'NULL | json_object | text',
+  verify_ssl TINYINT(1) DEFAULT NULL COMMENT 'NULL = use provider default',
+  api_key_env VARCHAR(128) DEFAULT NULL,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  sort_order INT NOT NULL DEFAULT 0,
+  comment TEXT,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_llm_route_slot (project_id, caller_script, function_key, model_slot),
+  KEY idx_llm_routes_active (project_id, caller_script, function_key, is_active),
+  CONSTRAINT fk_llm_routes_project FOREIGN KEY (project_id) REFERENCES llm_projects (id) ON UPDATE CASCADE,
+  CONSTRAINT fk_llm_routes_primary_provider FOREIGN KEY (primary_provider_id) REFERENCES llm_providers (id) ON UPDATE CASCADE,
+  CONSTRAINT fk_llm_routes_fallback_provider FOREIGN KEY (fallback_provider_id) REFERENCES llm_providers (id) ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS llm_request_logs (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  project_id INT NOT NULL,
+  function_key VARCHAR(128) NOT NULL,
+  route_id INT NOT NULL,
+  provider_id INT NOT NULL,
+  model VARCHAR(255) NOT NULL,
+  is_fallback TINYINT(1) NOT NULL DEFAULT 0,
+  latency_ms INT NOT NULL DEFAULT 0,
+  deployment_code VARCHAR(64) DEFAULT 'internal',
+  api_key_source VARCHAR(32) DEFAULT NULL,
+  status VARCHAR(32) NOT NULL,
+  http_status INT DEFAULT NULL,
+  error_class VARCHAR(128) DEFAULT NULL,
+  error_message VARCHAR(512) DEFAULT NULL,
+  route_suspended_skip TINYINT(1) NOT NULL DEFAULT 0,
+  from_recovery_cache TINYINT(1) NOT NULL DEFAULT 0,
+  route_stage VARCHAR(64) DEFAULT NULL,
+  external_request_id VARCHAR(128) DEFAULT NULL,
+  prompt_tokens INT DEFAULT NULL,
+  completion_tokens INT DEFAULT NULL,
+  total_tokens INT DEFAULT NULL,
+  cost DECIMAL(12, 6) DEFAULT NULL,
+  provider_raw_json MEDIUMTEXT,
+  request_uuid CHAR(36) DEFAULT NULL,
+  UNIQUE KEY uk_llm_request_uuid (request_uuid),
+  KEY idx_llm_logs_time (created_at),
+  KEY idx_llm_logs_project_fn (project_id, function_key),
+  KEY idx_llm_logs_route (route_id),
+  CONSTRAINT fk_llm_logs_project FOREIGN KEY (project_id) REFERENCES llm_projects (id) ON UPDATE CASCADE,
+  CONSTRAINT fk_llm_logs_route FOREIGN KEY (route_id) REFERENCES llm_routes (id) ON UPDATE CASCADE,
+  CONSTRAINT fk_llm_logs_provider FOREIGN KEY (provider_id) REFERENCES llm_providers (id) ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
