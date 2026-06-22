@@ -4,10 +4,10 @@
 from __future__ import annotations
 
 import json
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from llm_connector.exceptions import RouteNotFoundError
-from llm_connector.models import LogInsert, ProviderRow, RouteRow
+from llm_connector.models import LogInsert, ProviderRow, RouteChain, RouteRow, RouteStageRow
 from llm_connector.tables import LlmTableNames
 
 
@@ -19,146 +19,186 @@ def _row_provider(row: dict, prefix: str = "") -> ProviderRow:
             extra = json.loads(extra)
         except json.JSONDecodeError:
             extra = None
+    enabled = row.get(f"{p}provider_is_enabled")
+    if enabled is None:
+        enabled = row.get("provider_is_enabled", 1)
     return ProviderRow(
         id=int(row[f"{p}provider_id"]),
         code=str(row[f"{p}provider_code"]),
         base_url=str(row[f"{p}provider_base_url"]),
         shared_api_key_env=str(row.get(f"{p}provider_shared_api_key_env") or ""),
         default_verify_ssl=bool(row.get(f"{p}provider_default_verify_ssl", 1)),
+        is_enabled=bool(enabled),
         extra_json=extra if isinstance(extra, dict) else None,
     )
 
 
-def _row_to_route(row: dict) -> RouteRow:
-    fb_provider = None
-    if row.get("fallback_provider_id"):
-        fb_provider = ProviderRow(
-            id=int(row["fallback_provider_id"]),
-            code=str(row["fb_provider_code"]),
-            base_url=str(row["fb_provider_base_url"]),
-            shared_api_key_env=str(row.get("fb_provider_shared_api_key_env") or ""),
-            default_verify_ssl=bool(row.get("fb_provider_default_verify_ssl", 1)),
-            extra_json=None,
-        )
-    return RouteRow(
+def _row_to_stage(row: dict) -> RouteStageRow:
+    return RouteStageRow(
         id=int(row["id"]),
-        project_id=int(row["project_id"]),
-        caller_script=str(row["caller_script"]),
-        function_key=str(row["function_key"] or "default"),
-        model_slot=int(row["model_slot"]),
-        primary_provider_id=int(row["primary_provider_id"]),
-        primary_model=str(row["primary_model"]),
-        same_provider_fallback_model=row.get("same_provider_fallback_model"),
-        fallback_provider_id=row.get("fallback_provider_id"),
-        fallback_model=row.get("fallback_model"),
-        error_streak_threshold=int(row.get("error_streak_threshold") or 1),
-        max_failures=int(row.get("max_failures") or 3),
-        failure_count=int(row.get("failure_count") or 0),
-        is_suspended=bool(row.get("is_suspended")),
-        temperature=float(row.get("temperature") if row.get("temperature") is not None else 0.0),
-        max_tokens=row.get("max_tokens"),
-        timeout_sec=int(row.get("timeout_sec") or 120),
-        max_retries=int(row.get("max_retries") or 3),
-        retry_delay_sec=int(row.get("retry_delay_sec") or 5),
-        response_format=row.get("response_format"),
-        verify_ssl=row.get("verify_ssl"),
-        api_key_env=row.get("api_key_env"),
-        is_active=bool(row.get("is_active", 1)),
+        stage=int(row.get("stage") or 0),
         provider=_row_provider(row),
-        fallback_provider=fb_provider,
+        model=str(row["primary_model"]),
     )
 
 
-_ROUTE_SELECT = """
-SELECT
-  r.id, r.project_id, r.caller_script, r.function_key, r.model_slot,
-  r.primary_provider_id, r.primary_model, r.same_provider_fallback_model,
-  r.fallback_provider_id, r.fallback_model, r.error_streak_threshold,
-  r.max_failures, r.failure_count, r.is_suspended, r.temperature, r.max_tokens,
-  r.timeout_sec, r.max_retries, r.retry_delay_sec, r.response_format,
-  r.verify_ssl, r.api_key_env, r.is_active,
-  p.id AS provider_id,
-  p.code AS provider_code,
-  p.base_url AS provider_base_url,
-  p.shared_api_key_env AS provider_shared_api_key_env,
-  p.default_verify_ssl AS provider_default_verify_ssl,
-  p.extra_json AS provider_extra_json,
-  fp.code AS fb_provider_code,
-  fp.base_url AS fb_provider_base_url,
-  fp.shared_api_key_env AS fb_provider_shared_api_key_env,
-  fp.default_verify_ssl AS fb_provider_default_verify_ssl
-FROM `{routes}` r
-JOIN `{projects}` pr ON pr.id = r.project_id
-JOIN `{providers}` p ON p.id = r.primary_provider_id
-LEFT JOIN `{providers}` fp ON fp.id = r.fallback_provider_id
-WHERE pr.code = %s
-  AND r.caller_script = %s
-  AND r.function_key = %s
-  AND r.model_slot = %s
-  AND r.is_active = 1
-LIMIT 1
-"""
+def _rows_to_chain(rows: List[dict]) -> RouteChain:
+    if not rows:
+        raise ValueError("empty chain rows")
+    rows = sorted(rows, key=lambda r: int(r.get("stage") or 0))
+    head = rows[0]
+    stages = [_row_to_stage(r) for r in rows]
+    return RouteChain(
+        head_route_id=int(head["id"]),
+        project_id=int(head["project_id"]),
+        caller_script=str(head["caller_script"]),
+        function_key=str(head["function_key"] or "default"),
+        model_slot=int(head["model_slot"]),
+        stages=stages,
+        error_streak_threshold=int(head.get("error_streak_threshold") or 1),
+        max_failures=int(head.get("max_failures") or 3),
+        failure_count=int(head.get("failure_count") or 0),
+        is_suspended=bool(head.get("is_suspended")),
+        temperature=float(head.get("temperature") if head.get("temperature") is not None else 0.0),
+        max_tokens=head.get("max_tokens"),
+        timeout_sec=int(head.get("timeout_sec") or 120),
+        max_retries=int(head.get("max_retries") or 3),
+        retry_delay_sec=int(head.get("retry_delay_sec") or 5),
+        response_format=head.get("response_format"),
+        verify_ssl=head.get("verify_ssl"),
+        api_key_env=head.get("api_key_env"),
+        is_active=bool(head.get("is_active", 1)),
+        sort_order=int(head.get("sort_order") or 0),
+        comment=head.get("comment"),
+    )
 
-_ROUTE_LIST_SELECT = """
-SELECT
-  r.id, r.project_id, r.caller_script, r.function_key, r.model_slot,
-  r.primary_provider_id, r.primary_model, r.same_provider_fallback_model,
-  r.fallback_provider_id, r.fallback_model, r.error_streak_threshold,
-  r.max_failures, r.failure_count, r.is_suspended, r.temperature, r.max_tokens,
-  r.timeout_sec, r.max_retries, r.retry_delay_sec, r.response_format,
-  r.verify_ssl, r.api_key_env, r.is_active,
-  p.id AS provider_id,
-  p.code AS provider_code,
-  p.base_url AS provider_base_url,
-  p.shared_api_key_env AS provider_shared_api_key_env,
-  p.default_verify_ssl AS provider_default_verify_ssl,
-  p.extra_json AS provider_extra_json,
-  fp.code AS fb_provider_code,
-  fp.base_url AS fb_provider_base_url,
-  fp.shared_api_key_env AS fb_provider_shared_api_key_env,
-  fp.default_verify_ssl AS fb_provider_default_verify_ssl
-FROM `{routes}` r
-JOIN `{projects}` pr ON pr.id = r.project_id
-JOIN `{providers}` p ON p.id = r.primary_provider_id
-LEFT JOIN `{providers}` fp ON fp.id = r.fallback_provider_id
-WHERE pr.code = %s
-  AND r.caller_script = %s
-  AND r.function_key = %s
-  AND r.is_active = 1
-ORDER BY r.model_slot ASC, r.sort_order ASC, r.id ASC
-"""
 
-_ROUTE_OVERVIEW_SELECT = """
+def _chain_to_route_row(chain: RouteChain) -> RouteRow:
+    head = chain.stages[0]
+    return RouteRow(
+        id=chain.head_route_id,
+        project_id=chain.project_id,
+        caller_script=chain.caller_script,
+        function_key=chain.function_key,
+        model_slot=chain.model_slot,
+        stage=0,
+        primary_provider_id=head.provider.id,
+        primary_model=head.model,
+        same_provider_fallback_model=None,
+        fallback_provider_id=None,
+        fallback_model=None,
+        error_streak_threshold=chain.error_streak_threshold,
+        max_failures=chain.max_failures,
+        failure_count=chain.failure_count,
+        is_suspended=chain.is_suspended,
+        temperature=chain.temperature,
+        max_tokens=chain.max_tokens,
+        timeout_sec=chain.timeout_sec,
+        max_retries=chain.max_retries,
+        retry_delay_sec=chain.retry_delay_sec,
+        response_format=chain.response_format,
+        verify_ssl=chain.verify_ssl,
+        api_key_env=chain.api_key_env,
+        is_active=chain.is_active,
+        provider=head.provider,
+        fallback_provider=None,
+        stages=list(chain.stages),
+        comment=chain.comment,
+    )
+
+
+_ROUTE_STAGE_SELECT = """
 SELECT
-  r.id, r.project_id, r.caller_script, r.function_key, r.model_slot,
+  r.id, r.project_id, r.caller_script, r.function_key, r.model_slot, r.stage,
   r.primary_provider_id, r.primary_model, r.same_provider_fallback_model,
   r.fallback_provider_id, r.fallback_model, r.error_streak_threshold,
   r.max_failures, r.failure_count, r.is_suspended, r.temperature, r.max_tokens,
   r.timeout_sec, r.max_retries, r.retry_delay_sec, r.response_format,
-  r.verify_ssl, r.api_key_env, r.is_active,
+  r.verify_ssl, r.api_key_env, r.is_active, r.sort_order, r.comment,
   p.id AS provider_id,
   p.code AS provider_code,
   p.base_url AS provider_base_url,
   p.shared_api_key_env AS provider_shared_api_key_env,
   p.default_verify_ssl AS provider_default_verify_ssl,
-  p.extra_json AS provider_extra_json,
-  fp.code AS fb_provider_code,
-  fp.base_url AS fb_provider_base_url,
-  fp.shared_api_key_env AS fb_provider_shared_api_key_env,
-  fp.default_verify_ssl AS fb_provider_default_verify_ssl
+  p.is_enabled AS provider_is_enabled,
+  p.extra_json AS provider_extra_json
 FROM `{routes}` r
 JOIN `{projects}` pr ON pr.id = r.project_id
 JOIN `{providers}` p ON p.id = r.primary_provider_id
-LEFT JOIN `{providers}` fp ON fp.id = r.fallback_provider_id
 WHERE pr.code = %s
   AND r.is_active = 1
-ORDER BY r.caller_script ASC, r.function_key ASC, r.model_slot ASC, r.sort_order ASC, r.id ASC
 """
 
 
 class MysqlPrimaryStorage:
     def __init__(self, tables: LlmTableNames | None = None):
         self.tables = tables or LlmTableNames()
+
+    def _fetch_stage_rows(
+        self,
+        cursor: Any,
+        project_code: str,
+        *,
+        caller_script: Optional[str] = None,
+        function_key: Optional[str] = None,
+        model_slot: Optional[int] = None,
+    ) -> List[dict]:
+        sql = _ROUTE_STAGE_SELECT.format(
+            routes=self.tables.routes,
+            projects=self.tables.projects,
+            providers=self.tables.providers,
+        )
+        params: List[Any] = [project_code]
+        if caller_script is not None:
+            sql += " AND r.caller_script = %s"
+            params.append(caller_script)
+        if function_key is not None:
+            sql += " AND r.function_key = %s"
+            params.append(function_key or "default")
+        if model_slot is not None:
+            sql += " AND r.model_slot = %s"
+            params.append(model_slot)
+        sql += " ORDER BY r.caller_script ASC, r.function_key ASC, r.model_slot ASC, r.stage ASC, r.id ASC"
+        cursor.execute(sql, tuple(params))
+        return list(cursor.fetchall() or [])
+
+    def _group_chains(self, rows: List[dict]) -> List[RouteChain]:
+        groups: Dict[Tuple[str, str, int], List[dict]] = {}
+        for row in rows:
+            key = (
+                str(row["caller_script"]),
+                str(row["function_key"] or "default"),
+                int(row["model_slot"]),
+            )
+            groups.setdefault(key, []).append(row)
+        chains = [_rows_to_chain(g) for g in groups.values()]
+        chains.sort(
+            key=lambda c: (c.caller_script, c.function_key, c.model_slot, c.sort_order),
+        )
+        return chains
+
+    def load_route_chain(
+        self,
+        cursor: Any,
+        *,
+        project_code: str,
+        caller_script: str,
+        function_key: str,
+        model_slot: int = 1,
+    ) -> RouteChain:
+        fk = function_key or "default"
+        rows = self._fetch_stage_rows(
+            cursor,
+            project_code,
+            caller_script=caller_script,
+            function_key=fk,
+            model_slot=model_slot,
+        )
+        if not rows:
+            raise RouteNotFoundError(
+                f"No route for {project_code=!r} {caller_script=!r} {fk=!r} slot={model_slot}"
+            )
+        return _rows_to_chain(rows)
 
     def load_route(
         self,
@@ -169,19 +209,14 @@ class MysqlPrimaryStorage:
         function_key: str,
         model_slot: int = 1,
     ) -> RouteRow:
-        fk = function_key or "default"
-        sql = _ROUTE_SELECT.format(
-            routes=self.tables.routes,
-            projects=self.tables.projects,
-            providers=self.tables.providers,
+        chain = self.load_route_chain(
+            cursor,
+            project_code=project_code,
+            caller_script=caller_script,
+            function_key=function_key,
+            model_slot=model_slot,
         )
-        cursor.execute(sql, (project_code, caller_script, fk, model_slot))
-        row = cursor.fetchone()
-        if not row:
-            raise RouteNotFoundError(
-                f"No route for {project_code=!r} {caller_script=!r} {fk=!r} slot={model_slot}"
-            )
-        return _row_to_route(row)
+        return _chain_to_route_row(chain)
 
     def load_routes_for_caller(
         self,
@@ -192,14 +227,22 @@ class MysqlPrimaryStorage:
         function_key: str,
     ) -> List[RouteRow]:
         fk = function_key or "default"
-        sql = _ROUTE_LIST_SELECT.format(
-            routes=self.tables.routes,
-            projects=self.tables.projects,
-            providers=self.tables.providers,
+        rows = self._fetch_stage_rows(
+            cursor,
+            project_code,
+            caller_script=caller_script,
+            function_key=fk,
         )
-        cursor.execute(sql, (project_code, caller_script, fk))
-        rows = cursor.fetchall() or []
-        return [_row_to_route(r) for r in rows]
+        return [_chain_to_route_row(c) for c in self._group_chains(rows)]
+
+    def load_route_chains_overview(
+        self,
+        cursor: Any,
+        *,
+        project_code: str,
+    ) -> List[RouteChain]:
+        rows = self._fetch_stage_rows(cursor, project_code)
+        return self._group_chains(rows)
 
     def load_routes_overview(
         self,
@@ -207,14 +250,10 @@ class MysqlPrimaryStorage:
         *,
         project_code: str,
     ) -> List[RouteRow]:
-        sql = _ROUTE_OVERVIEW_SELECT.format(
-            routes=self.tables.routes,
-            projects=self.tables.projects,
-            providers=self.tables.providers,
-        )
-        cursor.execute(sql, (project_code,))
-        rows = cursor.fetchall() or []
-        return [_row_to_route(r) for r in rows]
+        return [
+            _chain_to_route_row(c)
+            for c in self.load_route_chains_overview(cursor, project_code=project_code)
+        ]
 
     def load_projects(self, cursor: Any) -> List[dict]:
         t = self.tables.projects

@@ -27,6 +27,7 @@ def _route(api_key_env=None) -> RouteRow:
         caller_script="test.py",
         function_key="default",
         model_slot=1,
+        stage=0,
         primary_provider_id=1,
         primary_model="test/model",
         same_provider_fallback_model=None,

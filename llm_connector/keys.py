@@ -4,17 +4,19 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple, Union
 
 from llm_connector.exceptions import MissingApiKeyError
 
 if TYPE_CHECKING:
-    from llm_connector.models import ProviderRow, RouteRow
+    from llm_connector.models import ProviderRow, RouteChain, RouteRow
+
+RouteKeySource = Union["RouteRow", "RouteChain"]
 
 
 def resolve_api_key(
     explicit: Optional[str],
-    route: "RouteRow",
+    route: RouteKeySource,
     provider: "ProviderRow",
 ) -> Tuple[str, str]:
     """

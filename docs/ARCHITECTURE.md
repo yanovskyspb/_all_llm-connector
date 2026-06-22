@@ -98,22 +98,43 @@
 
 - Маршрутизация LLM-вызовов по таблицам `llm_*` в MySQL
 - Логирование в `llm_request_logs`
-- Multi-stage fallback (same-provider model → cross-provider)
+- **Stage-based fallback:** несколько строк `llm_routes` с полем `stage` на один логический маршрут `(caller_script, function_key, model_slot)`
 - Recovery частичных ответов в `runtime/llm_recovery/` (потребитель)
 - MVP: режим **internal / normal** — один DSN primary, без outbox
+
+### Маршруты и fallback
+
+Один вызов `complete(caller_script, function_key, model_slot=1)` загружает все активные строки с `ORDER BY stage` и идёт по цепочке до первого успеха.
+
+**Стандартная цепочка** (большинство скриптов): `openrouter` → `openrouter_usa` → `replicate` → `routerai` → `vsegpt` (stage 0–4).
+
+**Исключения:**
+
+| Маршрут | Стадий | Примечание |
+|---------|--------|------------|
+| `prompt_meta_extract.py` / `extract` | 2 | Только openrouter: primary + `openrouter/free` |
+| `generate_images_for_articles.ipynb` | 1 (будущее) | Только vsegpt — см. [`generate_images_for_articles.md`](generate_images_for_articles.md) |
+
+**Пропуск стадии без `failure_count`:**
+
+- нет API-ключа (`status=skipped_no_key`)
+- провайдер выключен: `llm_providers.is_enabled = 0` (`status=skipped_provider_disabled`)
+- стадия выключена: `llm_routes.is_active = 0` (строка не загружается)
+
+`headers_vote` — два `function_key`: `headers_vote_1`, `headers_vote_2` (вместо `model_slot` 1/2).
 
 ### Таблицы
 
 | Таблица | Роль |
 |---------|------|
 | `llm_projects` | Код проекта-потребителя (`ailenta_parser`) |
-| `llm_providers` | OpenRouter, VseGPT, RouterAI, Replicate, … + `shared_api_key_env` |
-| `llm_routes` | `caller_script` + `function_key` + `model_slot` |
+| `llm_providers` | Провайдеры + `shared_api_key_env` + **`is_enabled`** (глобальный kill switch) |
+| `llm_routes` | **`stage`** + `caller_script` + `function_key` + `model_slot` — одна строка = одна стадия цепочки |
 | `llm_request_logs` | Аналитика вызовов |
 
 **Физически:** отдельная БД **`_llm_connector`** на том же MySQL-сервере (не в `ailenta_parser`).
 
-Миграции: `docs/migrations/000_create_database.sql` → `001` → `002`.
+Миграции: `000` → `001` → `002` → `003` → `004` → **`005`** (openrouter_usa, is_enabled) → **`006`** (stage chains).
 
 ### Фаза 2 (заглушки)
 
@@ -129,7 +150,7 @@ pip install -r requirements_llm_connector.txt
 
 Мост: `pys/llm_connector_bridge.py` (только project_code + recovery path).
 DSN и подключение: `llm_connector.db_config` / `llm_connector.db_connection` + env `LLM_DB_*`.
-Пилот: `prompts_pre_list_headers_vote.py`, `prompt_meta_extract.py`.
+Пилот: `prompts_pre_list_headers_vote.py` (`headers_vote_1` / `headers_vote_2`), `prompt_meta_extract.py`.
 
 ### Dev dashboard
 
@@ -144,4 +165,4 @@ uvicorn scripts.test_dashboard.app:app --host 127.0.0.1 --port 8765 --reload
 
 ---
 
-*Последнее обновление: 2026-06-22*
+*Последнее обновление: 2026-06-22 (stage chains, openrouter_usa)*

@@ -12,16 +12,67 @@ class ProviderRow:
     base_url: str
     shared_api_key_env: str
     default_verify_ssl: bool
+    is_enabled: bool = True
     extra_json: Optional[Dict[str, Any]] = None
 
 
 @dataclass
+class RouteStageRow:
+    id: int
+    stage: int
+    provider: ProviderRow
+    model: str
+
+
+@dataclass
+class RouteChain:
+    """Logical route: ordered fallback stages for (script, function_key, model_slot)."""
+
+    head_route_id: int
+    project_id: int
+    caller_script: str
+    function_key: str
+    model_slot: int
+    stages: List[RouteStageRow]
+    error_streak_threshold: int
+    max_failures: int
+    failure_count: int
+    is_suspended: bool
+    temperature: float
+    max_tokens: Optional[int]
+    timeout_sec: int
+    max_retries: int
+    retry_delay_sec: int
+    response_format: Optional[str]
+    verify_ssl: Optional[bool]
+    api_key_env: Optional[str]
+    is_active: bool
+    sort_order: int = 0
+    comment: Optional[str] = None
+
+    @property
+    def id(self) -> int:
+        return self.head_route_id
+
+    @property
+    def provider(self) -> ProviderRow:
+        return self.stages[0].provider
+
+    @property
+    def primary_model(self) -> str:
+        return self.stages[0].model
+
+
+@dataclass
 class RouteRow:
+    """Backward-compatible view: chain head + legacy fallback columns (deprecated)."""
+
     id: int
     project_id: int
     caller_script: str
     function_key: str
     model_slot: int
+    stage: int
     primary_provider_id: int
     primary_model: str
     same_provider_fallback_model: Optional[str]
@@ -42,6 +93,8 @@ class RouteRow:
     is_active: bool
     provider: ProviderRow
     fallback_provider: Optional[ProviderRow] = None
+    stages: List[RouteStageRow] = field(default_factory=list)
+    comment: Optional[str] = None
 
 
 @dataclass
@@ -91,8 +144,11 @@ class LogInsert:
     request_uuid: str
 
 
-RouteStage = str  # primary | same_provider_fallback | cross_provider_fallback
+RouteStage = str
 
 STAGE_PRIMARY: RouteStage = "primary"
 STAGE_SAME_PROVIDER: RouteStage = "same_provider_fallback"
 STAGE_CROSS_PROVIDER: RouteStage = "cross_provider_fallback"
+
+STATUS_SKIPPED_NO_KEY = "skipped_no_key"
+STATUS_SKIPPED_PROVIDER_DISABLED = "skipped_provider_disabled"

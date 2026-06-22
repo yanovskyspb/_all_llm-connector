@@ -15,7 +15,7 @@ pip install -e "C:\cursors\dev\_all_llm-connector[web]"
 | Переменная | Назначение |
 |------------|------------|
 | `LLM_DB_HOST`, `LLM_DB_USER`, `LLM_DB_PASSWORD` | Подключение к `_llm_connector` |
-| `API_OPENROUTER_KEY`, `API_VSEGPT_KEY`, `API_ROUTERAI_KEY`, `API_REPLICATE_KEY`, … | Ключи провайдеров |
+| `API_OPENROUTER_KEY`, `API_OPENROUTER_USA_KEY`, `API_VSEGPT_KEY`, `API_ROUTERAI_KEY`, `API_REPLICATE_KEY`, … | Ключи провайдеров |
 
 ## Запуск
 

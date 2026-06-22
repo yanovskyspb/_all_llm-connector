@@ -48,7 +48,7 @@ from llm_connector.exceptions import (
     RouteSuspendedError,
 )
 from llm_connector.key_display import resolve_key_display
-from llm_connector.models import RouteRow
+from llm_connector.models import RouteRow, RouteStageRow
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 TEST_MESSAGE = [{"role": "user", "content": "Reply with exactly: OK"}]
@@ -71,11 +71,20 @@ def _route_column_key(route: RouteRow) -> str:
     return f"{route.function_key}::{route.model_slot}"
 
 
+def _stage_to_dict(route: RouteRow, stage: RouteStageRow) -> Dict[str, Any]:
+    key_info = resolve_key_display(route, stage.provider)
+    return {
+        "stage": stage.stage,
+        "provider_code": stage.provider.code,
+        "model": stage.model,
+        "provider_enabled": stage.provider.is_enabled,
+        "key": key_info,
+    }
+
+
 def _route_to_dict(route: RouteRow) -> Dict[str, Any]:
+    stages = route.stages or []
     key_info = resolve_key_display(route, route.provider)
-    fb_key_info = None
-    if route.fallback_provider:
-        fb_key_info = resolve_key_display(route, route.fallback_provider)
 
     return {
         "id": route.id,
@@ -87,23 +96,14 @@ def _route_to_dict(route: RouteRow) -> Dict[str, Any]:
             "provider_code": route.provider.code,
             "model": route.primary_model,
         },
-        "same_provider_fallback_model": route.same_provider_fallback_model,
-        "cross_provider_fallback": (
-            {
-                "provider_code": route.fallback_provider.code,
-                "model": route.fallback_model,
-            }
-            if route.fallback_provider and route.fallback_model
-            else None
-        ),
+        "stages": [_stage_to_dict(route, s) for s in stages],
         "key": key_info,
-        "fallback_key": fb_key_info,
         "is_suspended": route.is_suspended,
         "is_active": route.is_active,
         "failure_count": route.failure_count,
         "max_failures": route.max_failures,
         "timeout_sec": route.timeout_sec,
-        "comment": None,
+        "comment": route.comment,
     }
 
 

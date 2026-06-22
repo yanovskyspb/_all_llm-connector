@@ -54,14 +54,16 @@ def test_fresh_cursor_replaces_cursor_when_ping_fails(monkeypatch):
 def test_log_error_swallows_db_failure(monkeypatch):
     adapter = MagicMock()
     adapter.insert_log.side_effect = RuntimeError("db down")
-    route = MagicMock(project_id=1, id=1)
+    chain = MagicMock(project_id=1)
+    stage_row = MagicMock(id=1)
     provider = MagicMock(id=1)
     monkeypatch.setattr("llm_connector.client.fresh_cursor", lambda c: c)
 
     _log_error(
         adapter,
         MagicMock(),
-        route,
+        chain,
+        stage_row,
         provider,
         "m",
         False,

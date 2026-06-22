@@ -21,6 +21,23 @@ class MysqlLlmAdapter:
         self.tables = tables or LlmTableNames()
         self._storage = storage or MysqlPrimaryStorage(self.tables)
 
+    def load_route_chain(
+        self,
+        cursor: Any,
+        *,
+        project_code: str,
+        caller_script: str,
+        function_key: str,
+        model_slot: int = 1,
+    ):
+        return self._storage.load_route_chain(
+            cursor,
+            project_code=project_code,
+            caller_script=caller_script,
+            function_key=function_key,
+            model_slot=model_slot,
+        )
+
     def load_route(
         self,
         cursor: Any,

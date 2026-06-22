@@ -7,7 +7,7 @@ import logging
 import os
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import httpx
 from openai import OpenAI
@@ -21,13 +21,15 @@ from llm_connector.exceptions import (
 )
 from llm_connector.keys import resolve_api_key
 from llm_connector.models import (
-    STAGE_CROSS_PROVIDER,
     STAGE_PRIMARY,
-    STAGE_SAME_PROVIDER,
+    STATUS_SKIPPED_NO_KEY,
+    STATUS_SKIPPED_PROVIDER_DISABLED,
     CompleteResult,
     LogInsert,
     ProviderRow,
+    RouteChain,
     RouteRow,
+    RouteStageRow,
 )
 from llm_connector.recovery import (
     get_slot_content,
@@ -40,7 +42,6 @@ from llm_connector.recovery import (
 )
 from llm_connector.usage import parse_usage, response_to_raw_json
 
-# In-process consecutive failure streak per route_id (MVP).
 _streak: Dict[int, int] = {}
 logger = logging.getLogger("llm_connector.client")
 
@@ -53,6 +54,8 @@ _AUTH_ERROR_MARKERS = (
     "insufficient_quota",
     "billing",
 )
+
+StageTuple = Tuple[str, ProviderRow, str, bool, RouteStageRow]
 
 
 def get_routes_for_caller(
@@ -96,20 +99,20 @@ def complete(
     commit: bool = True,
 ) -> Optional[CompleteResult]:
     """
-    Run one LLM completion for a configured route.
+    Run one LLM completion for a configured route chain.
 
     Returns None if all retries/stages fail. Raises RouteSuspendedError if route suspended.
     """
-    route = adapter.load_route(
+    chain = adapter.load_route_chain(
         cursor,
         project_code=project_code,
         caller_script=caller_script,
         function_key=function_key,
         model_slot=model_slot,
     )
-    if route.is_suspended:
+    if chain.is_suspended:
         raise RouteSuspendedError(
-            f"Route {route.id} suspended: {caller_script} slot={model_slot}"
+            f"Route {chain.head_route_id} suspended: {caller_script} slot={model_slot}"
         )
 
     fk = function_key or "default"
@@ -127,9 +130,9 @@ def complete(
         if cached_content is not None:
             return CompleteResult(
                 content=cached_content,
-                route_id=route.id,
-                provider_code=route.provider.code,
-                model=route.primary_model,
+                route_id=chain.head_route_id,
+                provider_code=chain.provider.code,
+                model=chain.primary_model,
                 route_stage=STAGE_PRIMARY,
                 is_fallback=False,
                 request_uuid=str(uuid.uuid4()),
@@ -140,23 +143,56 @@ def complete(
     deployment_code = os.getenv("LLM_DEPLOYMENT_CODE", "internal")
     explicit_key = api_key.strip() if api_key and api_key.strip() else None
 
-    stages = _build_stages(route)
-    streak = _streak.get(route.id, 0)
-    stages_to_try = _stages_for_attempt(stages, streak, route.error_streak_threshold)
+    stages = _build_stages(chain)
+    streak = _streak.get(chain.head_route_id, 0)
+    stages_to_try = _stages_for_attempt(stages, streak, chain.error_streak_threshold)
 
     last_error: Optional[Exception] = None
-    for stage_name, provider, model, is_fallback in stages_to_try:
+    for stage_name, provider, model, is_fallback, stage_row in stages_to_try:
+        if not provider.is_enabled:
+            _log_skip(
+                adapter,
+                cursor,
+                chain,
+                stage_row,
+                provider,
+                model,
+                is_fallback,
+                stage_name,
+                deployment_code,
+                fk,
+                STATUS_SKIPPED_PROVIDER_DISABLED,
+                "Provider disabled in database",
+                commit=commit,
+            )
+            continue
+
         try:
-            key, key_source = resolve_api_key(explicit_key, route, provider)
+            key, key_source = resolve_api_key(explicit_key, chain, provider)
         except MissingApiKeyError as e:
             last_error = e
-            _record_failure(adapter, cursor, route, str(e), commit=commit)
+            _log_skip(
+                adapter,
+                cursor,
+                chain,
+                stage_row,
+                provider,
+                model,
+                is_fallback,
+                stage_name,
+                deployment_code,
+                fk,
+                STATUS_SKIPPED_NO_KEY,
+                str(e),
+                commit=commit,
+            )
             continue
 
         result = _call_stage(
             adapter=adapter,
             cursor=cursor,
-            route=route,
+            chain=chain,
+            stage_row=stage_row,
             provider=provider,
             model=model,
             messages=messages,
@@ -172,11 +208,11 @@ def complete(
             commit=commit,
         )
         if result is not None:
-            _streak[route.id] = 0
+            _streak[chain.head_route_id] = 0
             _run_db(
                 cursor,
                 commit,
-                lambda cur: adapter.reset_route_failure(cur, route.id),
+                lambda cur: adapter.reset_route_failure(cur, chain.head_route_id),
             )
             if rec_path is not None and entity_id:
                 write_slot_success(
@@ -195,8 +231,8 @@ def complete(
             return result
         last_error = RuntimeError(f"stage {stage_name} failed")
 
-    streak = _streak.get(route.id, 0) + 1
-    _streak[route.id] = streak
+    streak = _streak.get(chain.head_route_id, 0) + 1
+    _streak[chain.head_route_id] = streak
 
     if rec_path is not None and entity_id and last_error:
         write_slot_error(
@@ -217,42 +253,37 @@ def _messages_to_text(messages: List[Dict[str, str]]) -> str:
     return "\n".join(f"{m.get('role','user')}: {m.get('content','')}" for m in messages)
 
 
-def _build_stages(
-    route: RouteRow,
-) -> List[Tuple[str, ProviderRow, str, bool]]:
-    stages: List[Tuple[str, ProviderRow, str, bool]] = [
-        (STAGE_PRIMARY, route.provider, route.primary_model, False),
-    ]
-    if route.same_provider_fallback_model:
+def _build_stages(chain: RouteChain) -> List[StageTuple]:
+    stages: List[StageTuple] = []
+    for stage_row in chain.stages:
+        if stage_row.stage == 0:
+            name = STAGE_PRIMARY
+        else:
+            name = f"stage_{stage_row.stage}_{stage_row.provider.code}"
         stages.append(
-            (STAGE_SAME_PROVIDER, route.provider, route.same_provider_fallback_model, True)
-        )
-    if route.fallback_provider and route.fallback_model:
-        stages.append(
-            (STAGE_CROSS_PROVIDER, route.fallback_provider, route.fallback_model, True)
+            (name, stage_row.provider, stage_row.model, stage_row.stage > 0, stage_row)
         )
     return stages
 
 
 def _stages_for_attempt(
-    stages: List[Tuple[str, ProviderRow, str, bool]],
+    stages: List[StageTuple],
     streak: int,
     error_streak_threshold: int,
-) -> List[Tuple[str, ProviderRow, str, bool]]:
+) -> List[StageTuple]:
     """Full chain on normal path; skip primary after consecutive failures."""
     if streak >= error_streak_threshold and len(stages) > 1:
         return stages[1:]
     return stages
 
 
-def _verify_ssl(route: RouteRow, provider: ProviderRow) -> bool:
-    if route.verify_ssl is not None:
-        return bool(route.verify_ssl)
+def _verify_ssl(chain: RouteChain, provider: ProviderRow) -> bool:
+    if chain.verify_ssl is not None:
+        return bool(chain.verify_ssl)
     return bool(provider.default_verify_ssl)
 
 
 def _run_db(cursor: Any, commit: bool, fn) -> bool:
-    """Run DB callback after reconnect; never raise (logging must not mask LLM errors)."""
     try:
         cur = fresh_cursor(cursor)
         if cur is None:
@@ -271,7 +302,8 @@ def _call_stage(
     *,
     adapter: MysqlLlmAdapter,
     cursor: Any,
-    route: RouteRow,
+    chain: RouteChain,
+    stage_row: RouteStageRow,
     provider: ProviderRow,
     model: str,
     messages: List[Dict[str, str]],
@@ -286,10 +318,10 @@ def _call_stage(
     temperature_override: Optional[float],
     commit: bool,
 ) -> Optional[CompleteResult]:
-    verify = _verify_ssl(route, provider)
-    max_tokens = max_tokens_override if max_tokens_override is not None else route.max_tokens
+    verify = _verify_ssl(chain, provider)
+    max_tokens = max_tokens_override if max_tokens_override is not None else chain.max_tokens
     temperature = (
-        temperature_override if temperature_override is not None else route.temperature
+        temperature_override if temperature_override is not None else chain.temperature
     )
     http_client = httpx.Client(verify=verify)
     client = OpenAI(api_key=api_key, base_url=provider.base_url, http_client=http_client)
@@ -298,15 +330,15 @@ def _call_stage(
         "model": model,
         "messages": messages,
         "temperature": temperature,
-        "timeout": route.timeout_sec,
+        "timeout": chain.timeout_sec,
     }
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
-    if route.response_format == "json_object":
+    if chain.response_format == "json_object":
         kwargs["response_format"] = {"type": "json_object"}
 
     last_exc: Optional[Exception] = None
-    for attempt in range(1, route.max_retries + 1):
+    for attempt in range(1, chain.max_retries + 1):
         t0 = time.perf_counter()
         try:
             response = client.chat.completions.create(**kwargs)
@@ -319,9 +351,9 @@ def _call_stage(
             raw_json = response_to_raw_json(response)
             log_uuid = str(uuid.uuid4())
             log_row = LogInsert(
-                project_id=route.project_id,
+                project_id=chain.project_id,
                 function_key=function_key,
-                route_id=route.id,
+                route_id=stage_row.id,
                 provider_id=provider.id,
                 model=model,
                 is_fallback=is_fallback,
@@ -346,7 +378,7 @@ def _call_stage(
             _run_db(cursor, commit, lambda cur: adapter.insert_log(cur, log_row))
             return CompleteResult(
                 content=text,
-                route_id=route.id,
+                route_id=stage_row.id,
                 provider_code=provider.code,
                 model=model,
                 route_stage=stage_name,
@@ -368,7 +400,8 @@ def _call_stage(
                 _log_error(
                     adapter,
                     cursor,
-                    route,
+                    chain,
+                    stage_row,
                     provider,
                     model,
                     is_fallback,
@@ -380,14 +413,15 @@ def _call_stage(
                     e,
                     commit,
                 )
-                raise  # no downgrade to shared key
-            if attempt < route.max_retries:
-                time.sleep(route.retry_delay_sec)
+                raise
+            if attempt < chain.max_retries:
+                time.sleep(chain.retry_delay_sec)
                 continue
             _log_error(
                 adapter,
                 cursor,
-                route,
+                chain,
+                stage_row,
                 provider,
                 model,
                 is_fallback,
@@ -399,7 +433,7 @@ def _call_stage(
                 e,
                 commit,
             )
-            _record_failure(adapter, cursor, route, str(e), commit=commit)
+            _record_failure(adapter, cursor, chain, str(e), commit=commit)
             return None
     return None
 
@@ -409,10 +443,55 @@ def _is_auth_error(exc: Exception) -> bool:
     return any(m in msg for m in _AUTH_ERROR_MARKERS)
 
 
+def _log_skip(
+    adapter: MysqlLlmAdapter,
+    cursor: Any,
+    chain: RouteChain,
+    stage_row: RouteStageRow,
+    provider: ProviderRow,
+    model: str,
+    is_fallback: bool,
+    stage_name: str,
+    deployment_code: str,
+    function_key: str,
+    status: str,
+    message: str,
+    *,
+    commit: bool,
+) -> None:
+    log_row = LogInsert(
+        project_id=chain.project_id,
+        function_key=function_key,
+        route_id=stage_row.id,
+        provider_id=provider.id,
+        model=model,
+        is_fallback=is_fallback,
+        latency_ms=0,
+        deployment_code=deployment_code,
+        api_key_source="none",
+        status=status,
+        http_status=None,
+        error_class=None,
+        error_message=message[:500],
+        route_suspended_skip=False,
+        from_recovery_cache=False,
+        route_stage=stage_name,
+        external_request_id=None,
+        prompt_tokens=None,
+        completion_tokens=None,
+        total_tokens=None,
+        cost=None,
+        provider_raw_json=None,
+        request_uuid=str(uuid.uuid4()),
+    )
+    _run_db(cursor, commit, lambda cur: adapter.insert_log(cur, log_row))
+
+
 def _log_error(
     adapter: MysqlLlmAdapter,
     cursor: Any,
-    route: RouteRow,
+    chain: RouteChain,
+    stage_row: RouteStageRow,
     provider: ProviderRow,
     model: str,
     is_fallback: bool,
@@ -426,9 +505,9 @@ def _log_error(
 ) -> None:
     http_status = getattr(exc, "status_code", None)
     log_row = LogInsert(
-        project_id=route.project_id,
+        project_id=chain.project_id,
         function_key=function_key,
-        route_id=route.id,
+        route_id=stage_row.id,
         provider_id=provider.id,
         model=model,
         is_fallback=is_fallback,
@@ -456,14 +535,14 @@ def _log_error(
 def _record_failure(
     adapter: MysqlLlmAdapter,
     cursor: Any,
-    route: RouteRow,
+    chain: RouteChain,
     reason: str,
     *,
     commit: bool,
 ) -> None:
     def _fn(cur: Any) -> None:
-        count = adapter.increment_route_failure(cur, route.id)
-        if count >= route.max_failures:
-            adapter.suspend_route(cur, route.id, reason[:255])
+        count = adapter.increment_route_failure(cur, chain.head_route_id)
+        if count >= chain.max_failures:
+            adapter.suspend_route(cur, chain.head_route_id, reason[:255])
 
     _run_db(cursor, commit, _fn)

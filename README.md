@@ -70,6 +70,7 @@ Copy [`.env.example`](.env.example) to `.env` in this repo root (for test dashbo
 | Variable | Purpose |
 |----------|---------|
 | `API_OPENROUTER_KEY` | Default OpenRouter key (`shared_api_key_env` on provider) |
+| `API_OPENROUTER_USA_KEY` | Second OpenRouter account (OpenRouterUSA) |
 | `API_VSEGPT_KEY` | VseGPT key |
 | `API_ARTEMOX_KEY` | Artemox key |
 | `API_OPENAI_KEY` | OpenAI key |

@@ -9,6 +9,16 @@ from llm_connector.models import LogInsert, RouteRow
 class LlmStorage(Protocol):
     """Thin storage layer — MVP: MysqlPrimaryStorage; phase 2: ResilientStorage."""
 
+    def load_route_chain(
+        self,
+        cursor: Any,
+        *,
+        project_code: str,
+        caller_script: str,
+        function_key: str,
+        model_slot: int = 1,
+    ): ...
+
     def load_route(
         self,
         cursor: Any,

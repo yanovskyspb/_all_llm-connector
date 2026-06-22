@@ -39,10 +39,7 @@
   <template id="route-cell-template">
     <div class="route-cell">
       <div class="route-title"></div>
-      <div class="route-primary"></div>
-      <div class="route-fallback same-fb hidden"></div>
-      <div class="route-fallback cross-fb hidden"></div>
-      <div class="route-key"></div>
+      <div class="route-stages"></div>
       <div class="route-status"></div>
     </div>
   </template>
@@ -80,30 +77,28 @@
 
     function buildRouteCell(route) {
       const node = cellTemplate.content.cloneNode(true);
-      node.querySelector(".route-title").textContent =
-        `${route.function_key} / slot ${route.model_slot}`;
+      const slotLabel = route.model_slot > 1 ? ` / slot ${route.model_slot}` : "";
+      node.querySelector(".route-title").textContent = `${route.function_key}${slotLabel}`;
 
-      const primary = route.primary;
-      node.querySelector(".route-primary").innerHTML =
-        `<strong>primary:</strong> ${primary.provider_code} → <code>${primary.model}</code>`;
-
-      if (route.same_provider_fallback_model) {
-        const el = node.querySelector(".same-fb");
-        el.classList.remove("hidden");
-        el.innerHTML =
-          `<strong>same-provider:</strong> <code>${route.same_provider_fallback_model}</code>`;
+      const stagesEl = node.querySelector(".route-stages");
+      const stages = route.stages || [];
+      if (!stages.length && route.primary) {
+        stagesEl.innerHTML =
+          `<div class="stage-line"><strong>stage 0:</strong> ${route.primary.provider_code} → <code>${route.primary.model}</code></div>`;
+      } else {
+        stagesEl.innerHTML = stages
+          .map((s) => {
+            const en = s.provider_enabled
+              ? '<span class="status-ok">on</span>'
+              : '<span class="status-bad">off</span>';
+            const key = renderKeyInfo(s.key);
+            return `<div class="stage-line">
+              <strong>stage ${s.stage}:</strong> ${s.provider_code} → <code>${escapeHtml(s.model)}</code>
+              · prov ${en} · key ${key}
+            </div>`;
+          })
+          .join("");
       }
-
-      if (route.cross_provider_fallback) {
-        const fb = route.cross_provider_fallback;
-        const el = node.querySelector(".cross-fb");
-        el.classList.remove("hidden");
-        el.innerHTML =
-          `<strong>cross-provider:</strong> ${fb.provider_code} → <code>${fb.model}</code>`;
-      }
-
-      node.querySelector(".route-key").innerHTML =
-        `<strong>ключ:</strong> ${renderKeyInfo(route.key)}`;
 
       const suspended = route.is_suspended ? "suspended" : "active";
       const statusClass = route.is_suspended ? "status-bad" : "status-ok";

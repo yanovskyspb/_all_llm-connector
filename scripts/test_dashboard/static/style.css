@@ -149,6 +149,12 @@ th.col-script {
   text-align: center;
 }
 
+.route-cell .stage-line {
+  font-size: 0.85rem;
+  margin: 0.2rem 0;
+  color: var(--muted);
+}
+
 .route-cell {
   display: flex;
   flex-direction: column;
