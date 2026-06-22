@@ -9,7 +9,9 @@ INSERT INTO llm_providers (code, base_url, shared_api_key_env, default_verify_ss
   ('openrouter', 'https://openrouter.ai/api/v1', 'API_OPENROUTER_KEY', 1),
   ('vsegpt', 'https://api.vsegpt.ru/v1/', 'API_VSEGPT_KEY', 1),
   ('artemox', 'https://api.artemox.com/v1', 'API_ARTEMOX_KEY', 1),
-  ('openai', 'https://api.openai.com/v1', 'API_OPENAI_KEY', 1)
+  ('openai', 'https://api.openai.com/v1', 'API_OPENAI_KEY', 1),
+  ('routerai', 'https://routerai.ru/api/v1', 'API_ROUTERAI_KEY', 1),
+  ('replicate', 'https://openai-proxy.replicate.com/v1', 'API_REPLICATE_KEY', 1)
 ON DUPLICATE KEY UPDATE
   base_url = VALUES(base_url),
   shared_api_key_env = VALUES(shared_api_key_env);
