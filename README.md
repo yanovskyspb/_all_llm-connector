@@ -32,7 +32,7 @@ Env (consumer and migrations):
 
 | Variable | Default |
 |----------|---------|
-| `LLM_DB_HOST` | `DB_HOST` or `127.0.0.1` |
+| `LLM_DB_HOST` | `DB_HOST` or **`100.75.41.14`** (Tailscale) |
 | `LLM_DB_DATABASE` | **`_llm_connector`** |
 | `LLM_DB_USER` / `LLM_DB_PASSWORD` | fall back to `DB_*` |
 
@@ -65,12 +65,16 @@ print(result.content)
 
 ## Environment
 
+Copy [`.env.example`](.env.example) to `.env` in this repo root (for test dashboard / local migrations) or set the same variables in the consumer app environment.
+
 | Variable | Purpose |
 |----------|---------|
 | `API_OPENROUTER_KEY` | Default OpenRouter key (`shared_api_key_env` on provider) |
 | `API_VSEGPT_KEY` | VseGPT key |
 | `API_ARTEMOX_KEY` | Artemox key |
 | `API_OPENAI_KEY` | OpenAI key |
+| `API_ROUTERAI_KEY` | [RouterAI](https://routerai.ru/) key |
+| `API_REPLICATE_KEY` | [Replicate](https://replicate.com/account/api-tokens) API token (`r8_…`; OpenAI-compatible proxy) |
 | `LLM_DEPLOYMENT_CODE` | Written to `llm_request_logs.deployment_code` (default `internal`) |
 
 Phase 2 (external VPS): see `docs/ARCHITECTURE.md` — Tailscale, replica, outbox.

@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LLM Connector — Test Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>LLM Connector — Test Dashboard</h1>
+    <div class="toolbar">
+      <label>
+        Проект
+        <select id="project-select"></select>
+      </label>
+      <button id="reload-btn" type="button">Обновить</button>
+    </div>
+    <p class="warning">
+      Тест вызывает реальный <code>complete()</code>: пишет в <code>llm_request_logs</code>
+      и при ошибках может увеличить <code>failure_count</code> (как в проде).
+      <code>LLM_DEPLOYMENT_CODE=test_dashboard</code> на время теста.
+    </p>
+  </header>
+
+  <div id="status" class="status" aria-live="polite"></div>
+
+  <div class="table-wrap">
+    <table id="routes-table">
+      <thead>
+        <tr id="header-row">
+          <th class="col-script">Скрипт</th>
+        </tr>
+      </thead>
+      <tbody id="table-body"></tbody>
+    </table>
+  </div>
+
+  <template id="route-cell-template">
+    <div class="route-cell">
+      <div class="route-title"></div>
+      <div class="route-primary"></div>
+      <div class="route-fallback same-fb hidden"></div>
+      <div class="route-fallback cross-fb hidden"></div>
+      <div class="route-key"></div>
+      <div class="route-status"></div>
+    </div>
+  </template>
+
+  <script>
+    const projectSelect = document.getElementById("project-select");
+    const reloadBtn = document.getElementById("reload-btn");
+    const statusEl = document.getElementById("status");
+    const headerRow = document.getElementById("header-row");
+    const tableBody = document.getElementById("table-body");
+    const cellTemplate = document.getElementById("route-cell-template");
+
+    let currentProject = "ailenta_parser";
+    let columns = [];
+
+    function setStatus(msg, kind = "info") {
+      statusEl.textContent = msg;
+      statusEl.className = `status status-${kind}`;
+    }
+
+    function formatColumnLabel(columnKey) {
+      const [fn, slot] = columnKey.split("::");
+      return `${fn} / slot ${slot}`;
+    }
+
+    function renderKeyInfo(key) {
+      if (!key) return "—";
+      const masked = key.is_set
+        ? key.masked_value
+        : '<span class="key-missing">не задан (проверьте .env и перезапустите дашборд)</span>';
+      const env = key.env_name ? `<code>${key.env_name}</code>` : "";
+      const badge = key.is_set ? "key-ok" : "key-missing";
+      return `<span class="key-badge ${badge}">${key.label}</span> ${env} <span class="masked">${masked}</span>`;
+    }
+
+    function buildRouteCell(route) {
+      const node = cellTemplate.content.cloneNode(true);
+      node.querySelector(".route-title").textContent =
+        `${route.function_key} / slot ${route.model_slot}`;
+
+      const primary = route.primary;
+      node.querySelector(".route-primary").innerHTML =
+        `<strong>primary:</strong> ${primary.provider_code} → <code>${primary.model}</code>`;
+
+      if (route.same_provider_fallback_model) {
+        const el = node.querySelector(".same-fb");
+        el.classList.remove("hidden");
+        el.innerHTML =
+          `<strong>same-provider:</strong> <code>${route.same_provider_fallback_model}</code>`;
+      }
+
+      if (route.cross_provider_fallback) {
+        const fb = route.cross_provider_fallback;
+        const el = node.querySelector(".cross-fb");
+        el.classList.remove("hidden");
+        el.innerHTML =
+          `<strong>cross-provider:</strong> ${fb.provider_code} → <code>${fb.model}</code>`;
+      }
+
+      node.querySelector(".route-key").innerHTML =
+        `<strong>ключ:</strong> ${renderKeyInfo(route.key)}`;
+
+      const suspended = route.is_suspended ? "suspended" : "active";
+      const statusClass = route.is_suspended ? "status-bad" : "status-ok";
+      node.querySelector(".route-status").innerHTML =
+        `<span class="${statusClass}">${suspended}</span> · failures ${route.failure_count}/${route.max_failures}`;
+
+      return node;
+    }
+
+    function renderTable(data) {
+      columns = data.columns || [];
+      headerRow.innerHTML = '<th class="col-script">Скрипт</th>';
+      for (const col of columns) {
+        const th = document.createElement("th");
+        th.textContent = formatColumnLabel(col);
+        headerRow.appendChild(th);
+      }
+      const actionTh = document.createElement("th");
+      actionTh.className = "col-actions";
+      actionTh.textContent = "Действия";
+      headerRow.appendChild(actionTh);
+
+      tableBody.innerHTML = "";
+      for (const row of data.scripts || []) {
+        const tr = document.createElement("tr");
+        tr.dataset.script = row.caller_script;
+
+        const scriptTd = document.createElement("td");
+        scriptTd.className = "col-script";
+        scriptTd.innerHTML = `<code>${row.caller_script}</code>`;
+        tr.appendChild(scriptTd);
+
+        for (const col of columns) {
+          const td = document.createElement("td");
+          const route = row.routes_by_column[col];
+          if (route) {
+            td.appendChild(buildRouteCell(route));
+          } else {
+            td.className = "empty-cell";
+            td.textContent = "—";
+          }
+          tr.appendChild(td);
+        }
+
+        const actionTd = document.createElement("td");
+        actionTd.className = "col-actions";
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "test-btn";
+        btn.textContent = "Протестировать маршруты";
+        btn.addEventListener("click", () => testScript(row.caller_script, btn, tr));
+        actionTd.appendChild(btn);
+        const resultsDiv = document.createElement("div");
+        resultsDiv.className = "test-results hidden";
+        actionTd.appendChild(resultsDiv);
+        tr.appendChild(actionTd);
+
+        tableBody.appendChild(tr);
+      }
+    }
+
+    function renderTestResults(container, results) {
+      container.classList.remove("hidden");
+      container.innerHTML = results
+        .map((r) => {
+          const cls = r.status === "success" ? "result-ok" : "result-err";
+          const detail =
+            r.status === "success"
+              ? `${r.provider_code} → ${r.model} (${r.route_stage}, ${r.latency_ms}ms, key: ${r.api_key_source})`
+              : r.error || r.status;
+          const preview = r.content_preview
+            ? `<div class="preview">«${escapeHtml(r.content_preview)}»</div>`
+            : "";
+          return `<div class="result-item ${cls}">
+            <strong>slot ${r.model_slot} (${r.function_key}):</strong> ${escapeHtml(detail)}
+            ${preview}
+          </div>`;
+        })
+        .join("");
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    async function loadProjects() {
+      const res = await fetch("/api/projects");
+      if (!res.ok) throw new Error(await res.text());
+      const projects = await res.json();
+      projectSelect.innerHTML = "";
+      for (const p of projects) {
+        const opt = document.createElement("option");
+        opt.value = p.code;
+        opt.textContent = `${p.code} — ${p.name}`;
+        if (p.code === currentProject) opt.selected = true;
+        projectSelect.appendChild(opt);
+      }
+      if (!projects.length) {
+        const opt = document.createElement("option");
+        opt.value = "ailenta_parser";
+        opt.textContent = "ailenta_parser";
+        projectSelect.appendChild(opt);
+      }
+    }
+
+    async function loadRoutes() {
+      currentProject = projectSelect.value;
+      setStatus("Загрузка маршрутов…");
+      const res = await fetch(`/api/routes?project_code=${encodeURIComponent(currentProject)}`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      renderTable(data);
+      setStatus(`Загружено: ${data.route_count} маршрутов (${data.project_code})`, "ok");
+    }
+
+    async function testScript(callerScript, btn, tr) {
+      const resultsDiv = tr.querySelector(".test-results");
+      btn.disabled = true;
+      setStatus(`Тест ${callerScript}… (может занять несколько минут)`);
+      resultsDiv.classList.add("hidden");
+      resultsDiv.innerHTML = '<div class="spinner">Выполняется complete()…</div>';
+
+      try {
+        const res = await fetch("/api/test-script", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            project_code: currentProject,
+            caller_script: callerScript,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
+        renderTestResults(resultsDiv, data.results);
+        const ok = data.results.filter((r) => r.status === "success").length;
+        setStatus(
+          `Тест ${callerScript}: ${ok}/${data.results.length} успешно`,
+          ok === data.results.length ? "ok" : "warn",
+        );
+      } catch (e) {
+        resultsDiv.innerHTML = `<div class="result-err">${escapeHtml(e.message)}</div>`;
+        setStatus(`Ошибка теста: ${e.message}`, "err");
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    projectSelect.addEventListener("change", loadRoutes);
+    reloadBtn.addEventListener("click", loadRoutes);
+
+    (async () => {
+      try {
+        await loadProjects();
+        await loadRoutes();
+      } catch (e) {
+        setStatus(`Ошибка: ${e.message}`, "err");
+      }
+    })();
+  </script>
+</body>
+</html>

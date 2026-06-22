@@ -107,7 +107,7 @@
 | Таблица | Роль |
 |---------|------|
 | `llm_projects` | Код проекта-потребителя (`ailenta_parser`) |
-| `llm_providers` | OpenRouter, VseGPT, … + `shared_api_key_env` |
+| `llm_providers` | OpenRouter, VseGPT, RouterAI, Replicate, … + `shared_api_key_env` |
 | `llm_routes` | `caller_script` + `function_key` + `model_slot` |
 | `llm_request_logs` | Аналитика вызовов |
 
@@ -131,6 +131,17 @@ pip install -r requirements_llm_connector.txt
 DSN и подключение: `llm_connector.db_config` / `llm_connector.db_connection` + env `LLM_DB_*`.
 Пилот: `prompts_pre_list_headers_vote.py`, `prompt_meta_extract.py`.
 
+### Dev dashboard
+
+Локальная тест-страница для обзора `llm_routes` и проверки `complete()` по скриптам:
+
+```bash
+pip install -e ".[web]"
+uvicorn scripts.test_dashboard.app:app --host 127.0.0.1 --port 8765 --reload
+```
+
+Подробности: [`docs/test_dashboard.md`](test_dashboard.md).
+
 ---
 
-*Последнее обновление: 2026-06-21*
+*Последнее обновление: 2026-06-22*
