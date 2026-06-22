@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 import uuid
@@ -12,7 +13,7 @@ import httpx
 from openai import OpenAI
 
 from llm_connector.adapter.mysql import MysqlLlmAdapter
-from llm_connector.db_connection import commit_conn
+from llm_connector.db_connection import commit_conn, fresh_cursor
 from llm_connector.exceptions import (
     MissingApiKeyError,
     RouteNotFoundError,
@@ -41,6 +42,7 @@ from llm_connector.usage import parse_usage, response_to_raw_json
 
 # In-process consecutive failure streak per route_id (MVP).
 _streak: Dict[int, int] = {}
+logger = logging.getLogger("llm_connector.client")
 
 _AUTH_ERROR_MARKERS = (
     "401",
@@ -174,9 +176,11 @@ def complete(
         )
         if result is not None:
             _streak[route.id] = 0
-            adapter.reset_route_failure(cursor, route.id)
-            if commit:
-                commit_conn(cursor)
+            _run_db(
+                cursor,
+                commit,
+                lambda cur: adapter.reset_route_failure(cur, route.id),
+            )
             if rec_path is not None and entity_id:
                 write_slot_success(
                     rec_path,
@@ -239,6 +243,22 @@ def _verify_ssl(route: RouteRow, provider: ProviderRow) -> bool:
     return bool(provider.default_verify_ssl)
 
 
+def _run_db(cursor: Any, commit: bool, fn) -> bool:
+    """Run DB callback after reconnect; never raise (logging must not mask LLM errors)."""
+    try:
+        cur = fresh_cursor(cursor)
+        if cur is None:
+            logger.warning("LLM DB unavailable; skipping write")
+            return False
+        fn(cur)
+        if commit:
+            commit_conn(cur)
+        return True
+    except Exception as e:
+        logger.warning("LLM DB operation failed (ignored): %s", e)
+        return False
+
+
 def _call_stage(
     *,
     adapter: MysqlLlmAdapter,
@@ -290,36 +310,32 @@ def _call_stage(
             ext_id = getattr(response, "id", None)
             raw_json = response_to_raw_json(response)
             log_uuid = str(uuid.uuid4())
-            adapter.insert_log(
-                cursor,
-                LogInsert(
-                    project_id=route.project_id,
-                    function_key=function_key,
-                    route_id=route.id,
-                    provider_id=provider.id,
-                    model=model,
-                    is_fallback=is_fallback,
-                    latency_ms=latency_ms,
-                    deployment_code=deployment_code,
-                    api_key_source=api_key_source,
-                    status="success",
-                    http_status=200,
-                    error_class=None,
-                    error_message=None,
-                    route_suspended_skip=False,
-                    from_recovery_cache=False,
-                    route_stage=stage_name,
-                    external_request_id=ext_id,
-                    prompt_tokens=pt,
-                    completion_tokens=ct,
-                    total_tokens=tt,
-                    cost=cost,
-                    provider_raw_json=raw_json,
-                    request_uuid=log_uuid,
-                ),
+            log_row = LogInsert(
+                project_id=route.project_id,
+                function_key=function_key,
+                route_id=route.id,
+                provider_id=provider.id,
+                model=model,
+                is_fallback=is_fallback,
+                latency_ms=latency_ms,
+                deployment_code=deployment_code,
+                api_key_source=api_key_source,
+                status="success",
+                http_status=200,
+                error_class=None,
+                error_message=None,
+                route_suspended_skip=False,
+                from_recovery_cache=False,
+                route_stage=stage_name,
+                external_request_id=ext_id,
+                prompt_tokens=pt,
+                completion_tokens=ct,
+                total_tokens=tt,
+                cost=cost,
+                provider_raw_json=raw_json,
+                request_uuid=log_uuid,
             )
-            if commit:
-                commit_conn(cursor)
+            _run_db(cursor, commit, lambda cur: adapter.insert_log(cur, log_row))
             return CompleteResult(
                 content=text,
                 route_id=route.id,
@@ -401,36 +417,32 @@ def _log_error(
     commit: bool,
 ) -> None:
     http_status = getattr(exc, "status_code", None)
-    adapter.insert_log(
-        cursor,
-        LogInsert(
-            project_id=route.project_id,
-            function_key=function_key,
-            route_id=route.id,
-            provider_id=provider.id,
-            model=model,
-            is_fallback=is_fallback,
-            latency_ms=latency_ms,
-            deployment_code=deployment_code,
-            api_key_source=api_key_source,
-            status="error",
-            http_status=http_status,
-            error_class=type(exc).__name__,
-            error_message=str(exc)[:500],
-            route_suspended_skip=False,
-            from_recovery_cache=False,
-            route_stage=stage_name,
-            external_request_id=None,
-            prompt_tokens=None,
-            completion_tokens=None,
-            total_tokens=None,
-            cost=None,
-            provider_raw_json=None,
-            request_uuid=str(uuid.uuid4()),
-        ),
+    log_row = LogInsert(
+        project_id=route.project_id,
+        function_key=function_key,
+        route_id=route.id,
+        provider_id=provider.id,
+        model=model,
+        is_fallback=is_fallback,
+        latency_ms=latency_ms,
+        deployment_code=deployment_code,
+        api_key_source=api_key_source,
+        status="error",
+        http_status=http_status,
+        error_class=type(exc).__name__,
+        error_message=str(exc)[:500],
+        route_suspended_skip=False,
+        from_recovery_cache=False,
+        route_stage=stage_name,
+        external_request_id=None,
+        prompt_tokens=None,
+        completion_tokens=None,
+        total_tokens=None,
+        cost=None,
+        provider_raw_json=None,
+        request_uuid=str(uuid.uuid4()),
     )
-    if commit:
-        commit_conn(cursor)
+    _run_db(cursor, commit, lambda cur: adapter.insert_log(cur, log_row))
 
 
 def _record_failure(
@@ -441,8 +453,9 @@ def _record_failure(
     *,
     commit: bool,
 ) -> None:
-    count = adapter.increment_route_failure(cursor, route.id)
-    if count >= route.max_failures:
-        adapter.suspend_route(cursor, route.id, reason[:255])
-    if commit:
-        commit_conn(cursor)
+    def _fn(cur: Any) -> None:
+        count = adapter.increment_route_failure(cur, route.id)
+        if count >= route.max_failures:
+            adapter.suspend_route(cur, route.id, reason[:255])
+
+    _run_db(cursor, commit, _fn)

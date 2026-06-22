@@ -75,7 +75,32 @@ def get_conn():
     global _conn
     if not _is_conn_alive(_conn):
         connect_with_retries()
+    elif _conn is not None:
+        try:
+            _conn.ping(reconnect=True, attempts=3, delay=1)
+        except MySQLError:
+            connect_with_retries()
     return _conn
+
+
+def fresh_cursor(cursor=None):
+    """Return a cursor backed by a live connection (reconnect after idle LLM calls)."""
+    conn = get_conn()
+    if conn is None:
+        return cursor
+    if cursor is not None:
+        cur_conn = getattr(cursor, "_connection", None)
+        if cur_conn is conn:
+            try:
+                conn.ping(reconnect=True, attempts=3, delay=1)
+                return cursor
+            except MySQLError:
+                pass
+        try:
+            cursor.close()
+        except Exception:
+            pass
+    return get_cursor()
 
 
 def get_cursor():
