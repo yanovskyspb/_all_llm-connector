@@ -134,7 +134,6 @@ def complete(
                 api_key_source="explicit" if api_key else "shared_env",
             )
 
-    request_uuid = str(uuid.uuid4())
     deployment_code = os.getenv("LLM_DEPLOYMENT_CODE", "internal")
     explicit_key = api_key.strip() if api_key and api_key.strip() else None
 
@@ -166,7 +165,6 @@ def complete(
             explicit_key=explicit_key,
             stage_name=stage_name,
             is_fallback=is_fallback,
-            request_uuid=request_uuid,
             deployment_code=deployment_code,
             function_key=fk,
             max_tokens_override=max_tokens_override,
@@ -253,7 +251,6 @@ def _call_stage(
     explicit_key: Optional[str],
     stage_name: str,
     is_fallback: bool,
-    request_uuid: str,
     deployment_code: str,
     function_key: str,
     max_tokens_override: Optional[int],
@@ -291,6 +288,7 @@ def _call_stage(
             pt, ct, tt, cost = parse_usage(response)
             ext_id = getattr(response, "id", None)
             raw_json = response_to_raw_json(response)
+            log_uuid = str(uuid.uuid4())
             adapter.insert_log(
                 cursor,
                 LogInsert(
@@ -316,7 +314,7 @@ def _call_stage(
                     total_tokens=tt,
                     cost=cost,
                     provider_raw_json=raw_json,
-                    request_uuid=request_uuid,
+                    request_uuid=log_uuid,
                 ),
             )
             if commit:
@@ -328,7 +326,7 @@ def _call_stage(
                 model=model,
                 route_stage=stage_name,
                 is_fallback=is_fallback,
-                request_uuid=request_uuid,
+                request_uuid=log_uuid,
                 prompt_tokens=pt,
                 completion_tokens=ct,
                 total_tokens=tt,
@@ -350,7 +348,6 @@ def _call_stage(
                     model,
                     is_fallback,
                     stage_name,
-                    request_uuid,
                     deployment_code,
                     function_key,
                     api_key_source,
@@ -370,7 +367,6 @@ def _call_stage(
                 model,
                 is_fallback,
                 stage_name,
-                request_uuid,
                 deployment_code,
                 function_key,
                 api_key_source,
@@ -396,7 +392,6 @@ def _log_error(
     model: str,
     is_fallback: bool,
     stage_name: str,
-    request_uuid: str,
     deployment_code: str,
     function_key: str,
     api_key_source: str,
@@ -430,7 +425,7 @@ def _log_error(
             total_tokens=None,
             cost=None,
             provider_raw_json=None,
-            request_uuid=request_uuid,
+            request_uuid=str(uuid.uuid4()),
         ),
     )
     if commit:
