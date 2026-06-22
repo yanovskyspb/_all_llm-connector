@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
+import pytest
+
 from llm_connector.client import _build_stages, _stages_for_attempt
+from llm_connector.exceptions import LlmConnectorError
 from llm_connector.models import ProviderRow, RouteChain, RouteStageRow, STAGE_PRIMARY
 
 
@@ -79,3 +82,35 @@ def test_stages_for_attempt_skips_primary_when_degraded():
     )
     stages = _build_stages(chain)
     assert _stages_for_attempt(stages, streak=1, error_streak_threshold=1) == stages[1:]
+
+
+def test_route_chain_rejects_empty_stages():
+    with pytest.raises(ValueError, match="at least one stage"):
+        RouteChain(
+            head_route_id=1,
+            project_id=1,
+            caller_script="test.py",
+            function_key="default",
+            model_slot=1,
+            stages=[],
+            error_streak_threshold=1,
+            max_failures=3,
+            failure_count=0,
+            is_suspended=False,
+            temperature=0.0,
+            max_tokens=None,
+            timeout_sec=60,
+            max_retries=1,
+            retry_delay_sec=1,
+            response_format=None,
+            verify_ssl=None,
+            api_key_env=None,
+            is_active=True,
+        )
+
+
+def test_route_chain_provider_raises_when_stages_cleared():
+    chain = _chain([(_provider("openrouter", 1), "m")])
+    chain.stages.clear()
+    with pytest.raises(LlmConnectorError, match="no stages"):
+        _ = chain.provider

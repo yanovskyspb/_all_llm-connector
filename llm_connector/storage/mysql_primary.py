@@ -74,7 +74,7 @@ def _rows_to_chain(rows: List[dict]) -> RouteChain:
 
 
 def _chain_to_route_row(chain: RouteChain) -> RouteRow:
-    head = chain.stages[0]
+    head = chain.head_stage
     return RouteRow(
         id=chain.head_route_id,
         project_id=chain.project_id,

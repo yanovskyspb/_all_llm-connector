@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from llm_connector.exceptions import LlmConnectorError
+
 
 @dataclass
 class ProviderRow:
@@ -50,17 +52,33 @@ class RouteChain:
     sort_order: int = 0
     comment: Optional[str] = None
 
+    def __post_init__(self) -> None:
+        if not self.stages:
+            raise ValueError(
+                f"RouteChain requires at least one stage: "
+                f"{self.caller_script!r} {self.function_key!r} slot={self.model_slot}"
+            )
+
     @property
     def id(self) -> int:
         return self.head_route_id
 
     @property
+    def head_stage(self) -> RouteStageRow:
+        if not self.stages:
+            raise LlmConnectorError(
+                f"RouteChain has no stages: "
+                f"{self.caller_script!r} {self.function_key!r} slot={self.model_slot}"
+            )
+        return self.stages[0]
+
+    @property
     def provider(self) -> ProviderRow:
-        return self.stages[0].provider
+        return self.head_stage.provider
 
     @property
     def primary_model(self) -> str:
-        return self.stages[0].model
+        return self.head_stage.model
 
 
 @dataclass
