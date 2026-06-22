@@ -22,23 +22,25 @@ SET @or := (SELECT id FROM llm_providers WHERE code = 'openrouter' LIMIT 1);
 -- pys scripts (legacy TZ section 6)
 INSERT INTO llm_routes (
   project_id, caller_script, function_key, model_slot,
-  primary_provider_id, primary_model, temperature, timeout_sec,
+  primary_provider_id, primary_model, same_provider_fallback_model,
+  temperature, timeout_sec,
   response_format, max_retries, retry_delay_sec, max_tokens, comment
 ) VALUES
-  (@proj, 'prompt_llm_check.py', 'default', 1, @or, 'stepfun/step-3.5-flash:free', 0, 60, NULL, 3, 5, NULL,
+  (@proj, 'prompt_llm_check.py', 'default', 1, @or, 'stepfun/step-3.5-flash:free', NULL, 0, 60, NULL, 3, 5, NULL,
    'LLM check for prompt quality'),
-  (@proj, 'prompts_pre_list_headers_generate.py', 'default', 1, @or, 'openai/gpt-5-mini', 0.7, 120, 'json_object', 3, 5, NULL,
+  (@proj, 'prompts_pre_list_headers_generate.py', 'default', 1, @or, 'openai/gpt-5-mini', NULL, 0.7, 120, 'json_object', 3, 5, NULL,
    'Generate 5 headers'),
-  (@proj, 'prompts_pre_list_translate_ru.py', 'default', 1, @or, 'openai/gpt-5-mini', 0.2, 120, NULL, 3, 5, NULL,
+  (@proj, 'prompts_pre_list_translate_ru.py', 'default', 1, @or, 'openai/gpt-5-mini', NULL, 0.2, 120, NULL, 3, 5, NULL,
    'Translate pre-list to RU'),
-  (@proj, 'prompts_pre_list_headers_vote.py', 'headers_vote', 1, @or, 'openai/gpt-5-nano', 0, 120, 'json_object', 3, 5, NULL,
+  (@proj, 'prompts_pre_list_headers_vote.py', 'headers_vote', 1, @or, 'openai/gpt-5-nano', NULL, 0, 120, 'json_object', 3, 5, NULL,
    'Headers vote model 1'),
-  (@proj, 'prompts_pre_list_headers_vote.py', 'headers_vote', 2, @or, 'ibm-granite/granite-4.1-8b', 0, 120, 'json_object', 3, 5, NULL,
+  (@proj, 'prompts_pre_list_headers_vote.py', 'headers_vote', 2, @or, 'ibm-granite/granite-4.1-8b', NULL, 0, 120, 'json_object', 3, 5, NULL,
    'Headers vote model 2'),
-  (@proj, 'prompt_meta_extract.py', 'extract', 1, @or, 'z-ai/glm-4.5-air:free', 0, 120, NULL, 3, 5, 3001,
-   'Extract prompt from telegram raw')
+  (@proj, 'prompt_meta_extract.py', 'extract', 1, @or, 'z-ai/glm-4.5-air:free', 'openrouter/free', 0, 120, NULL, 3, 5, 3001,
+   'Extract: glm:free primary, openrouter/free fallback')
 ON DUPLICATE KEY UPDATE
   primary_model = VALUES(primary_model),
+  same_provider_fallback_model = VALUES(same_provider_fallback_model),
   temperature = VALUES(temperature),
   timeout_sec = VALUES(timeout_sec),
   response_format = VALUES(response_format),

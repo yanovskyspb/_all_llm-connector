@@ -142,10 +142,7 @@ def complete(
 
     stages = _build_stages(route)
     streak = _streak.get(route.id, 0)
-    if streak >= route.error_streak_threshold and len(stages) > 1:
-        stages_to_try = stages[1:]
-    else:
-        stages_to_try = stages[:1]
+    stages_to_try = _stages_for_attempt(stages, streak, route.error_streak_threshold)
 
     last_error: Optional[Exception] = None
     for stage_name, provider, model, is_fallback in stages_to_try:
@@ -234,6 +231,17 @@ def _build_stages(
         stages.append(
             (STAGE_CROSS_PROVIDER, route.fallback_provider, route.fallback_model, True)
         )
+    return stages
+
+
+def _stages_for_attempt(
+    stages: List[Tuple[str, ProviderRow, str, bool]],
+    streak: int,
+    error_streak_threshold: int,
+) -> List[Tuple[str, ProviderRow, str, bool]]:
+    """Full chain on normal path; skip primary after consecutive failures."""
+    if streak >= error_streak_threshold and len(stages) > 1:
+        return stages[1:]
     return stages
 
 
