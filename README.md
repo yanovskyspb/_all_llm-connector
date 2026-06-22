@@ -3,6 +3,7 @@
 Shared pip package for LLM routing, request logging, multi-stage fallback, and slot-based recovery.
 
 Development: `C:\cursors\dev\_all_llm-connector`  
+GitHub: [yanovskyspb/_all_llm-connector](https://github.com/yanovskyspb/_all_llm-connector)  
 Production mirror: `P:\_all_llm-connector` (do not edit directly on `P:\`)
 
 ## Install
@@ -15,15 +16,30 @@ From a sibling consumer (e.g. `ailenta_parser`):
 
 ```bash
 pip install -e ../_all_llm-connector
+# or from GitHub:
+pip install "git+https://github.com/yanovskyspb/_all_llm-connector.git"
 ```
 
 ## Database migrations
 
-Run once on the target MySQL database:
+Dedicated database **`_llm_connector`** (not the consumer app DB):
 
 ```bash
-mysql -u root ailenta_parser < docs/migrations/001_llm_tables.sql
-mysql -u root ailenta_parser < docs/migrations/002_seed_ailenta_parser.sql
+python scripts/apply_migrations.py --host 100.75.41.14
+```
+
+Env (consumer and migrations):
+
+| Variable | Default |
+|----------|---------|
+| `LLM_DB_HOST` | `DB_HOST` or `127.0.0.1` |
+| `LLM_DB_DATABASE` | **`_llm_connector`** |
+| `LLM_DB_USER` / `LLM_DB_PASSWORD` | fall back to `DB_*` |
+
+If `llm_*` tables were created inside `ailenta_parser` by mistake:
+
+```bash
+mysql ailenta_parser < docs/migrations/999_drop_from_app_database.sql
 ```
 
 ## Quick start

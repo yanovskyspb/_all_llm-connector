@@ -1,5 +1,5 @@
 -- LLM connector schema (MVP internal)
--- Run on target MySQL database (e.g. ailenta_parser or dedicated llm_connector DB)
+-- Run on dedicated _llm_connector database
 
 CREATE TABLE IF NOT EXISTS llm_projects (
   id INT AUTO_INCREMENT PRIMARY KEY,

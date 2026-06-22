@@ -111,7 +111,9 @@
 | `llm_routes` | `caller_script` + `function_key` + `model_slot` |
 | `llm_request_logs` | Аналитика вызовов |
 
-Миграции: `docs/migrations/001_llm_tables.sql`, seed: `002_seed_ailenta_parser.sql`.
+**Физически:** отдельная БД **`_llm_connector`** на том же MySQL-сервере (не в `ailenta_parser`).
+
+Миграции: `docs/migrations/000_create_database.sql` → `001` → `002`.
 
 ### Фаза 2 (заглушки)
 
@@ -125,7 +127,9 @@
 pip install -r requirements_llm_connector.txt
 ```
 
-Мост: `pys/llm_connector_bridge.py`. Пилот: `prompts_pre_list_headers_vote.py`, `prompt_meta_extract.py`.
+Мост: `pys/llm_connector_bridge.py` (только project_code + recovery path).
+DSN и подключение: `llm_connector.db_config` / `llm_connector.db_connection` + env `LLM_DB_*`.
+Пилот: `prompts_pre_list_headers_vote.py`, `prompt_meta_extract.py`.
 
 ---
 
