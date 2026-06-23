@@ -146,8 +146,20 @@
 
 ### Интеграция в ailenta_parser
 
+Ключи и `.env` — в `_all_llm-connector`. **Зависимости** — в venv **ailenta_parser** (тот же `python`, что у cron/ноутбуков):
+
 ```bash
-pip install -r requirements_llm_connector.txt
+cd P:\ailenta_parser   # или C:\cursors\dev\ailenta_parser
+pip install -e P:\_all_llm-connector
+# или: pip install -r requirements_llm_connector.txt
+```
+
+`replicate` подтянется автоматически (зависимость `llm-connector` в `pyproject.toml`). Отдельный `pip install replicate` нужен только если коннектор уже стоял до обновления — тогда достаточно переустановить коннектор командой выше.
+
+Проверка из venv ailenta_parser:
+
+```bash
+python P:\_all_llm-connector\scripts\test_replicate_complete.py
 ```
 
 Мост: `pys/llm_connector_bridge.py` (только project_code + recovery path).

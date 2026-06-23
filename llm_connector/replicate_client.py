@@ -41,7 +41,7 @@ def messages_to_replicate_input(
     elif model_requires_max_completion_tokens(model):
         inp["max_completion_tokens"] = 4096
     if model_requires_max_completion_tokens(model):
-        inp["reasoning_effort"] = "minimal"
+        inp["reasoning_effort"] = "low"
     return inp
 
 

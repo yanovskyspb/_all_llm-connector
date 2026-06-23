@@ -12,13 +12,16 @@ Production mirror: `P:\_all_llm-connector` (do not edit directly on `P:\`)
 pip install -e C:\cursors\dev\_all_llm-connector
 ```
 
-From a sibling consumer (e.g. `ailenta_parser`):
+From a sibling consumer (e.g. `ailenta_parser`) — **use ailenta_parser's venv**, not a separate env in `_all_llm-connector`:
 
 ```bash
+cd ../ailenta_parser
 pip install -e ../_all_llm-connector
 # or from GitHub:
 pip install "git+https://github.com/yanovskyspb/_all_llm-connector.git"
 ```
+
+This installs `llm-connector` and its dependencies (`replicate`, `openai`, …) into the consumer environment.
 
 ## Database migrations
 

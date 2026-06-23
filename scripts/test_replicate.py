@@ -21,6 +21,7 @@ import argparse
 import os
 import sys
 import time
+from pathlib import Path
 
 
 def _mask_key(key: str) -> str:
@@ -49,6 +50,15 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    try:
+        import replicate  # noqa: F401
+    except ImportError:
+        print("FAIL: package 'replicate' not installed in this Python.")
+        print(f"       {sys.executable}")
+        print("Fix:   pip install replicate")
+        print("       pip install -e .   (from llm-connector repo root)")
+        return 1
+
     from llm_connector.env import ensure_env_loaded
 
     ensure_env_loaded(override=True, force=True)
@@ -60,6 +70,7 @@ def main() -> int:
         return 1
 
     print("Replicate connectivity test")
+    print(f"  package: {Path(__import__('llm_connector').__file__).parent}")
     print(f"  model:   {args.model}")
     print(f"  key:     {_mask_key(key)}")
     print(f"  timeout: {args.timeout}s")
@@ -115,6 +126,9 @@ def main() -> int:
     print(f"     reply: {preview!r}")
     print()
     print("Replicate is configured correctly.")
+    print()
+    print("Next: test all models from llm_routes (what complete() actually uses):")
+    print("  python scripts/test_replicate_routes.py")
     return 0
 
 

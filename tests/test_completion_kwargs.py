@@ -43,4 +43,4 @@ def test_replicate_native_input_from_messages():
     assert inp["prompt"] == "user: OK"
     assert "JSON" in inp["system_prompt"]
     assert inp["max_completion_tokens"] == 64
-    assert inp["reasoning_effort"] == "minimal"
+    assert inp["reasoning_effort"] == "low"
