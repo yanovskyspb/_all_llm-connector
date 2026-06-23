@@ -57,6 +57,7 @@ LLM_DB_PASSWORD=...
 | `GET /` | HTML-таблица |
 | `GET /api/projects` | Список проектов |
 | `GET /api/routes?project_code=ailenta_parser` | Матрица маршрутов |
+| `GET /api/logs?project_code=ailenta_parser&caller_script=prompt_meta_extract.py&limit=100` | Журнал запросов (названия проекта и скрипта) |
 | `POST /api/test-script` | Тест всех активных роутов скрипта через `complete()` |
 
 Тело `POST /api/test-script`:

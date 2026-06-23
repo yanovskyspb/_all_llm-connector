@@ -16,25 +16,77 @@
       </label>
       <button id="reload-btn" type="button">Обновить</button>
     </div>
-    <p class="warning">
+    <nav class="tabs" aria-label="Разделы">
+      <button type="button" class="tab active" data-tab="routes">Маршруты</button>
+      <button type="button" class="tab" data-tab="logs">Журнал запросов</button>
+    </nav>
+    <p class="warning tab-hint tab-hint-routes">
       Тест вызывает реальный <code>complete()</code>: пишет в <code>llm_request_logs</code>
       и при ошибках может увеличить <code>failure_count</code> (как в проде).
       <code>LLM_DEPLOYMENT_CODE=test_dashboard</code> на время теста.
+    </p>
+    <p class="warning tab-hint tab-hint-logs hidden">
+      Каждое обновление заново читает последние N записей из БД (сверху — самые новые).
+      Фильтр «Скрипт» ограничивает выборку: при выбранном скрипте записи других пайплайнов не показываются.
     </p>
   </header>
 
   <div id="status" class="status" aria-live="polite"></div>
 
-  <div class="table-wrap">
-    <table id="routes-table">
-      <thead>
-        <tr id="header-row">
-          <th class="col-script">Скрипт</th>
-        </tr>
-      </thead>
-      <tbody id="table-body"></tbody>
-    </table>
-  </div>
+  <section id="panel-routes" class="panel">
+    <div class="table-wrap">
+      <table id="routes-table">
+        <thead>
+          <tr id="header-row">
+            <th class="col-script">Скрипт</th>
+          </tr>
+        </thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="panel-logs" class="panel hidden">
+    <div class="logs-toolbar">
+      <label>
+        Скрипт
+        <select id="log-script-filter">
+          <option value="">Все скрипты</option>
+        </select>
+      </label>
+      <label>
+        Записей
+        <select id="log-limit">
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+          <option value="200">200</option>
+        </select>
+      </label>
+      <label class="checkbox-label">
+        <input type="checkbox" id="log-auto-refresh" />
+        Автообновление (5 с)
+      </label>
+      <button id="log-refresh-btn" type="button">Обновить лог</button>
+    </div>
+    <p id="log-meta" class="log-meta hidden" aria-live="polite"></p>
+    <div class="table-wrap">
+      <table id="logs-table">
+        <thead>
+          <tr>
+            <th>Время</th>
+            <th>Проект</th>
+            <th>Скрипт</th>
+            <th>Функция</th>
+            <th>Провайдер / модель</th>
+            <th>Статус</th>
+            <th>мс</th>
+            <th>Детали</th>
+          </tr>
+        </thead>
+        <tbody id="logs-body"></tbody>
+      </table>
+    </div>
+  </section>
 
   <template id="route-cell-template">
     <div class="route-cell">
@@ -51,9 +103,21 @@
     const headerRow = document.getElementById("header-row");
     const tableBody = document.getElementById("table-body");
     const cellTemplate = document.getElementById("route-cell-template");
+    const tabButtons = document.querySelectorAll(".tab");
+    const panelRoutes = document.getElementById("panel-routes");
+    const panelLogs = document.getElementById("panel-logs");
+    const logScriptFilter = document.getElementById("log-script-filter");
+    const logLimit = document.getElementById("log-limit");
+    const logAutoRefresh = document.getElementById("log-auto-refresh");
+    const logRefreshBtn = document.getElementById("log-refresh-btn");
+    const logsBody = document.getElementById("logs-body");
+    const logMeta = document.getElementById("log-meta");
 
     let currentProject = "ailenta_parser";
     let columns = [];
+    let activeTab = "routes";
+    let logRefreshTimer = null;
+    let logScripts = [];
 
     function setStatus(msg, kind = "info") {
       statusEl.textContent = msg;
@@ -160,6 +224,46 @@
       }
     }
 
+    function formatScriptOption(scriptRow) {
+      const lastAt = scriptRow.last_at ? ` · ${scriptRow.last_at}` : "";
+      return `${scriptRow.caller_script}${lastAt}`;
+    }
+
+    function updateLogScriptFilter(scripts) {
+      const selected = logScriptFilter.value;
+      logScripts = scripts || [];
+      logScriptFilter.innerHTML = '<option value="">Все скрипты</option>';
+      for (const scriptRow of logScripts) {
+        const opt = document.createElement("option");
+        opt.value = scriptRow.caller_script;
+        opt.textContent = formatScriptOption(scriptRow);
+        if (scriptRow.caller_script === selected) opt.selected = true;
+        logScriptFilter.appendChild(opt);
+      }
+    }
+
+    async function loadLogScripts() {
+      const res = await fetch(
+        `/api/log-scripts?project_code=${encodeURIComponent(currentProject)}`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) throw new Error(await res.text());
+      const scripts = await res.json();
+      updateLogScriptFilter(scripts);
+      return scripts;
+    }
+
+    function renderLogMeta(data, script) {
+      logMeta.classList.remove("hidden");
+      const filterText = script
+        ? `фильтр: <code>${escapeHtml(script)}</code>`
+        : "фильтр: все скрипты";
+      const newest = data.newest_at ? ` · последняя запись: ${escapeHtml(data.newest_at)}` : "";
+      const fetched = data.fetched_at ? ` · обновлено: ${escapeHtml(data.fetched_at)}` : "";
+      const maxId = data.max_id ? ` · max id: ${data.max_id}` : "";
+      logMeta.innerHTML = `${data.count} строк · ${filterText}${newest}${maxId}${fetched}`;
+    }
+
     function renderTestResults(container, results) {
       container.classList.remove("hidden");
       container.innerHTML = results
@@ -180,11 +284,92 @@
         .join("");
     }
 
+    function logStatusClass(status) {
+      if (status === "success") return "log-status-ok";
+      if (status === "error") return "log-status-err";
+      if (String(status || "").startsWith("skipped")) return "log-status-skip";
+      return "log-status-warn";
+    }
+
+    function formatLogDetails(row) {
+      const parts = [];
+      if (row.route_stage) parts.push(`stage: ${row.route_stage}`);
+      if (row.deployment_code) parts.push(`deploy: ${row.deployment_code}`);
+      if (row.is_fallback) parts.push("fallback");
+      if (row.from_recovery_cache) parts.push("recovery");
+      if (row.error_message) parts.push(row.error_message);
+      if (row.error_class) parts.push(row.error_class);
+      if (row.api_key_source) parts.push(`key: ${row.api_key_source}`);
+      if (row.total_tokens != null) parts.push(`tokens: ${row.total_tokens}`);
+      return parts.length ? escapeHtml(parts.join(" · ")) : "—";
+    }
+
+    function renderLogs(data) {
+      const items = data.items || [];
+      logsBody.innerHTML = "";
+      if (!items.length) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = '<td colspan="8" class="empty-cell">Записей нет</td>';
+        logsBody.appendChild(tr);
+        return;
+      }
+      for (const row of items) {
+        const tr = document.createElement("tr");
+        const slotLabel = row.model_slot > 1 ? ` / slot ${row.model_slot}` : "";
+        const statusCls = logStatusClass(row.status);
+        tr.innerHTML = `
+          <td class="log-time"><time datetime="${escapeHtml(row.created_at)}">${escapeHtml(row.created_at)}</time></td>
+          <td class="log-project" title="${escapeHtml(row.project_name || "")}">
+            <strong>${escapeHtml(row.project_code)}</strong>
+            ${row.project_name ? `<div class="log-sub">${escapeHtml(row.project_name)}</div>` : ""}
+          </td>
+          <td class="log-script"><code>${escapeHtml(row.caller_script)}</code></td>
+          <td><code>${escapeHtml(row.function_key)}${escapeHtml(slotLabel)}</code></td>
+          <td><code>${escapeHtml(row.provider_code)}</code> → <code>${escapeHtml(row.model)}</code></td>
+          <td><span class="log-status ${statusCls}">${escapeHtml(row.status)}</span></td>
+          <td class="log-ms">${row.latency_ms != null ? escapeHtml(String(row.latency_ms)) : "—"}</td>
+          <td class="log-details">${formatLogDetails(row)}</td>
+        `;
+        logsBody.appendChild(tr);
+      }
+    }
+
     function escapeHtml(s) {
       return String(s)
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
+    }
+
+    function switchTab(tab) {
+      activeTab = tab;
+      tabButtons.forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.tab === tab);
+      });
+      panelRoutes.classList.toggle("hidden", tab !== "routes");
+      panelLogs.classList.toggle("hidden", tab !== "logs");
+      document.querySelectorAll(".tab-hint").forEach((el) => el.classList.add("hidden"));
+      document.querySelector(`.tab-hint-${tab}`)?.classList.remove("hidden");
+      reloadBtn.textContent = tab === "routes" ? "Обновить" : "Обновить маршруты";
+      if (tab === "logs") {
+        setupLogAutoRefresh();
+      } else {
+        clearLogAutoRefresh();
+        logMeta.classList.add("hidden");
+      }
+    }
+
+    function setupLogAutoRefresh() {
+      clearLogAutoRefresh();
+      if (!logAutoRefresh.checked || activeTab !== "logs") return;
+      logRefreshTimer = setInterval(() => loadLogs({ quiet: true }), 5000);
+    }
+
+    function clearLogAutoRefresh() {
+      if (logRefreshTimer) {
+        clearInterval(logRefreshTimer);
+        logRefreshTimer = null;
+      }
     }
 
     async function loadProjects() {
@@ -214,7 +399,35 @@
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       renderTable(data);
-      setStatus(`Загружено: ${data.route_count} маршрутов (${data.project_code})`, "ok");
+      if (activeTab === "routes") {
+        setStatus(`Загружено: ${data.route_count} маршрутов (${data.project_code})`, "ok");
+      }
+      return data;
+    }
+
+    async function loadLogs({ quiet = false } = {}) {
+      currentProject = projectSelect.value;
+      const params = new URLSearchParams({
+        project_code: currentProject,
+        limit: logLimit.value,
+        _ts: String(Date.now()),
+      });
+      const script = logScriptFilter.value;
+      if (script) params.set("caller_script", script);
+      if (!quiet) setStatus("Загрузка журнала…");
+      const res = await fetch(`/api/logs?${params}`, { cache: "no-store" });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      renderLogs(data);
+      renderLogMeta(data, script);
+      const filterLabel = script ? ` · ${script}` : "";
+      if (activeTab === "logs") {
+        setStatus(
+          `Журнал: ${data.count} записей (${data.project_code}${filterLabel}) · max id ${data.max_id}`,
+          "ok",
+        );
+      }
+      return data;
     }
 
     async function testScript(callerScript, btn, tr) {
@@ -241,6 +454,7 @@
           `Тест ${callerScript}: ${ok}/${data.results.length} успешно`,
           ok === data.results.length ? "ok" : "warn",
         );
+        if (activeTab === "logs") await loadLogs({ quiet: true });
       } catch (e) {
         resultsDiv.innerHTML = `<div class="result-err">${escapeHtml(e.message)}</div>`;
         setStatus(`Ошибка теста: ${e.message}`, "err");
@@ -249,8 +463,67 @@
       }
     }
 
-    projectSelect.addEventListener("change", loadRoutes);
-    reloadBtn.addEventListener("click", loadRoutes);
+    tabButtons.forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        switchTab(btn.dataset.tab);
+        if (btn.dataset.tab === "logs") {
+          try {
+            await loadLogScripts();
+            await loadLogs();
+          } catch (e) {
+            setStatus(`Ошибка: ${e.message}`, "err");
+          }
+        }
+      });
+    });
+
+    projectSelect.addEventListener("change", async () => {
+      try {
+        await loadRoutes();
+        if (activeTab === "logs") {
+          await loadLogScripts();
+          await loadLogs();
+        }
+      } catch (e) {
+        setStatus(`Ошибка: ${e.message}`, "err");
+      }
+    });
+
+    reloadBtn.addEventListener("click", async () => {
+      try {
+        if (activeTab === "routes") {
+          await loadRoutes();
+        } else {
+          await loadLogs();
+        }
+      } catch (e) {
+        setStatus(`Ошибка: ${e.message}`, "err");
+      }
+    });
+
+    logScriptFilter.addEventListener("change", async () => {
+      try {
+        await loadLogs();
+      } catch (e) {
+        setStatus(`Ошибка: ${e.message}`, "err");
+      }
+    });
+    logLimit.addEventListener("change", async () => {
+      try {
+        await loadLogs();
+      } catch (e) {
+        setStatus(`Ошибка: ${e.message}`, "err");
+      }
+    });
+    logRefreshBtn.addEventListener("click", async () => {
+      try {
+        await loadLogScripts();
+        await loadLogs();
+      } catch (e) {
+        setStatus(`Ошибка: ${e.message}`, "err");
+      }
+    });
+    logAutoRefresh.addEventListener("change", setupLogAutoRefresh);
 
     (async () => {
       try {

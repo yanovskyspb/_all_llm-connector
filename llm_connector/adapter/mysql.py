@@ -84,6 +84,31 @@ class MysqlLlmAdapter:
     def load_projects(self, cursor: Any) -> List[dict]:
         return self._storage.load_projects(cursor)
 
+    def load_request_logs(
+        self,
+        cursor: Any,
+        *,
+        project_code: Optional[str] = None,
+        caller_script: Optional[str] = None,
+        limit: int = 100,
+        since_id: Optional[int] = None,
+    ) -> List[dict]:
+        return self._storage.load_request_logs(
+            cursor,
+            project_code=project_code,
+            caller_script=caller_script,
+            limit=limit,
+            since_id=since_id,
+        )
+
+    def load_log_scripts(
+        self,
+        cursor: Any,
+        *,
+        project_code: Optional[str] = None,
+    ) -> List[dict]:
+        return self._storage.load_log_scripts(cursor, project_code=project_code)
+
     def insert_log(self, cursor: Any, log: LogInsert) -> None:
         self._storage.insert_log(cursor, log)
 
