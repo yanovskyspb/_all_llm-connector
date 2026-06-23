@@ -18,7 +18,7 @@ _log = logging.getLogger("uvicorn.error")
 
 
 def _load_env() -> None:
-    """Reload .env from repo root / cwd (same paths as llm_connector.env)."""
+    """Reload .env from llm-connector package root (see llm_connector.env)."""
     from llm_connector.env import ensure_env_loaded
 
     ensure_env_loaded(override=True, force=True)

@@ -70,3 +70,13 @@ def test_resolve_route_key(monkeypatch):
     assert info["source"] == "route_env"
     assert info["label"] == "персональный"
     assert info["env_name"] == "MY_ROUTE_KEY"
+
+
+def test_resolve_falls_back_to_shared_when_route_env_empty(monkeypatch):
+    monkeypatch.delenv("MY_ROUTE_KEY", raising=False)
+    monkeypatch.setenv("API_OPENROUTER_KEY", "sk-or-v1-testkey123456")
+    route = _route(api_key_env="MY_ROUTE_KEY")
+    info = resolve_key_display(route, route.provider)
+    assert info["source"] == "shared_env"
+    assert info["env_name"] == "API_OPENROUTER_KEY"
+    assert info["is_set"] is True

@@ -63,7 +63,7 @@ def _reset_env_loader(monkeypatch, tmp_path: Path) -> None:
     env_mod._LOADED = False
     monkeypatch.delenv("API_ROUTERAI_KEY", raising=False)
     monkeypatch.delenv("API_VSEGPT_KEY", raising=False)
-    monkeypatch.setattr(env_mod, "_search_bases", lambda: [tmp_path])
+    monkeypatch.setattr(env_mod, "package_root", lambda: tmp_path)
 
 
 def test_stage_api_key_env_before_head(monkeypatch, tmp_path):
@@ -118,12 +118,38 @@ def test_ensure_env_loaded_reads_dotenv(monkeypatch, tmp_path):
     monkeypatch.delenv("API_ROUTERAI_KEY", raising=False)
     env_file = tmp_path / ".env"
     env_file.write_text("API_ROUTERAI_KEY=sk-from-dotenv\n", encoding="utf-8")
-    monkeypatch.setattr(env_mod, "_search_bases", lambda: [tmp_path])
+    monkeypatch.setattr(env_mod, "package_root", lambda: tmp_path)
 
     assert ensure_env_loaded(force=True) is True
     key, src = resolve_api_key(None, _route(), _provider())
     assert key == "sk-from-dotenv"
     assert src == "shared_env"
+
+
+def test_consumer_cwd_env_is_ignored(monkeypatch, tmp_path):
+    """Keys come from llm-connector .env only, not from consumer project cwd."""
+    import llm_connector.env as env_mod
+
+    pkg = tmp_path / "llm-connector"
+    pkg.mkdir()
+    (pkg / ".env").write_text("API_ROUTERAI_KEY=sk-from-connector\n", encoding="utf-8")
+
+    consumer = tmp_path / "consumer"
+    consumer.mkdir()
+    (consumer / ".env").write_text(
+        "API_ROUTERAI_KEY=sk-from-consumer\nAPI_VSEGPT_KEY=sk-vsegpt\n",
+        encoding="utf-8",
+    )
+
+    env_mod._LOADED = False
+    monkeypatch.chdir(consumer)
+    monkeypatch.setattr(env_mod, "package_root", lambda: pkg)
+    monkeypatch.delenv("API_ROUTERAI_KEY", raising=False)
+    monkeypatch.delenv("API_VSEGPT_KEY", raising=False)
+
+    ensure_env_loaded(force=True)
+    assert os.getenv("API_ROUTERAI_KEY") == "sk-from-connector"
+    assert os.getenv("API_VSEGPT_KEY", "") == ""
 
 
 def test_missing_key_after_env_load(monkeypatch, tmp_path):

@@ -45,13 +45,15 @@ def resolve_key_display(
         route, provider, stage_api_key_env=stage_api_key_env
     ):
         val = os.getenv(env_name, "").strip()
+        if not val:
+            continue
         label = "персональный" if source == "route_env" else "общий"
         return KeyDisplayInfo(
             source=source,
             label=label,
             env_name=env_name,
-            masked_value=mask_key(val) if val else None,
-            is_set=bool(val),
+            masked_value=mask_key(val),
+            is_set=True,
         )
     return KeyDisplayInfo(
         source="shared_env",

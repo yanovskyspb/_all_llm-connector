@@ -65,7 +65,7 @@ print(result.content)
 
 ## Environment
 
-Copy [`.env.example`](.env.example) to `.env` in this repo root (for test dashboard / local migrations) or set the same variables in the consumer app environment.
+Copy [`.env.example`](.env.example) to `.env` in **this repo root**. All provider API keys and `LLM_DB_*` are read only from here — consumer apps (e.g. ailenta_parser) do not supply LLM keys from their own `.env`.
 
 | Variable | Purpose |
 |----------|---------|

@@ -11,22 +11,49 @@ _log = logging.getLogger("llm_connector.env")
 _LOADED = False
 _WARNED = False
 
+_ENV_NAMES = (".env", ".env.local")
 
-def _search_bases() -> list[Path]:
-    bases: list[Path] = []
+
+def package_root() -> Path:
+    """Repository root of llm-connector (where API keys .env lives)."""
+    return Path(__file__).resolve().parent.parent
+
+
+def _env_files_to_load() -> list[tuple[Path, bool]]:
+    """
+    (path, override) in load order.
+
+    Only this package's .env files are used — never consumer app cwd.
+    Optional LLM_ENV_FILE may override values after the package files.
+    """
+    files: list[tuple[Path, bool]] = []
+    root = package_root()
+    for name in _ENV_NAMES:
+        path = root / name
+        if path.is_file():
+            files.append((path, False))
+
     explicit = os.getenv("LLM_ENV_FILE", "").strip()
     if explicit:
-        bases.append(Path(explicit))
-    bases.append(Path(__file__).resolve().parent.parent)
-    bases.append(Path.cwd())
-    return bases
+        p = Path(explicit)
+        if p.is_file():
+            files.append((p, True))
+        elif p.is_dir():
+            for name in _ENV_NAMES:
+                path = p / name
+                if path.is_file():
+                    files.append((path, True))
+    return files
 
 
 def ensure_env_loaded(*, override: bool = False, force: bool = False) -> bool:
     """
-    Load the first existing .env / .env.local among LLM_ENV_FILE, package root, cwd.
+    Load .env / .env.local from the llm-connector package root only.
 
-    Idempotent per process unless force=True (used by test dashboard on each request).
+    Consumer projects (ailenta_parser, etc.) are intentionally excluded: all
+    provider API keys and LLM_DB_* settings belong in this repo's .env.
+
+    Idempotent per process unless force=True (test dashboard reloads on each request).
     With override=False (default), variables already in os.environ are kept.
     """
     global _LOADED, _WARNED
@@ -43,22 +70,11 @@ def ensure_env_loaded(*, override: bool = False, force: bool = False) -> bool:
             _LOADED = True
         return False
 
-    names = (".env", ".env.local")
-    for base in _search_bases():
-        if base.is_file():
-            load_dotenv(base, override=override)
-            if not force:
-                _LOADED = True
-            return True
-        if base.is_dir():
-            for name in names:
-                path = base / name
-                if path.is_file():
-                    load_dotenv(path, override=override)
-                    if not force:
-                        _LOADED = True
-                    return True
+    loaded_any = False
+    for path, file_override in _env_files_to_load():
+        load_dotenv(path, override=override or file_override)
+        loaded_any = True
 
     if not force:
         _LOADED = True
-    return False
+    return loaded_any
