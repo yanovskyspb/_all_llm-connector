@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import os
 
+from llm_connector.env import ensure_env_loaded
+
 
 def get_llm_db_config() -> dict:
     """
@@ -13,6 +15,7 @@ def get_llm_db_config() -> dict:
     Env: LLM_DB_HOST, LLM_DB_USER, LLM_DB_PASSWORD, LLM_DB_DATABASE (default _llm_connector).
     Falls back to DB_HOST / DB_USER / DB_PASSWORD only for host/credentials, never database name.
     """
+    ensure_env_loaded()
     return {
         "host": os.getenv("LLM_DB_HOST", os.getenv("DB_HOST", "100.75.41.14")),
         "user": os.getenv("LLM_DB_USER", os.getenv("DB_USER", "root")),

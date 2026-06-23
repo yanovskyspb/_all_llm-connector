@@ -16,6 +16,7 @@ class ProviderRow:
     default_verify_ssl: bool
     is_enabled: bool = True
     extra_json: Optional[Dict[str, Any]] = None
+    legacy_api_key_env: Optional[str] = None
 
 
 @dataclass
@@ -24,6 +25,7 @@ class RouteStageRow:
     stage: int
     provider: ProviderRow
     model: str
+    api_key_env: Optional[str] = None
 
 
 @dataclass

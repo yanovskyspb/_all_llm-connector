@@ -168,7 +168,12 @@ def complete(
             continue
 
         try:
-            key, key_source = resolve_api_key(explicit_key, chain, provider)
+            key, key_source = resolve_api_key(
+                explicit_key,
+                chain,
+                provider,
+                stage_api_key_env=stage_row.api_key_env,
+            )
         except MissingApiKeyError as e:
             last_error = e
             _log_skip(

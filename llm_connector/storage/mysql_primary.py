@@ -30,6 +30,7 @@ def _row_provider(row: dict, prefix: str = "") -> ProviderRow:
         default_verify_ssl=bool(row.get(f"{p}provider_default_verify_ssl", 1)),
         is_enabled=bool(enabled),
         extra_json=extra if isinstance(extra, dict) else None,
+        legacy_api_key_env=row.get(f"{p}provider_legacy_api_key_env"),
     )
 
 
@@ -39,6 +40,7 @@ def _row_to_stage(row: dict) -> RouteStageRow:
         stage=int(row.get("stage") or 0),
         provider=_row_provider(row),
         model=str(row["primary_model"]),
+        api_key_env=row.get("api_key_env"),
     )
 
 
@@ -119,6 +121,7 @@ SELECT
   p.code AS provider_code,
   p.base_url AS provider_base_url,
   p.shared_api_key_env AS provider_shared_api_key_env,
+  p.api_key_env AS provider_legacy_api_key_env,
   p.default_verify_ssl AS provider_default_verify_ssl,
   p.is_enabled AS provider_is_enabled,
   p.extra_json AS provider_extra_json
@@ -260,6 +263,106 @@ class MysqlPrimaryStorage:
         cursor.execute(
             f"SELECT id, code, name FROM `{t}` ORDER BY code ASC",
         )
+        return list(cursor.fetchall() or [])
+
+    def load_request_logs(
+        self,
+        cursor: Any,
+        *,
+        project_code: Optional[str] = None,
+        caller_script: Optional[str] = None,
+        limit: int = 100,
+        since_id: Optional[int] = None,
+    ) -> List[dict]:
+        """Recent LLM request logs with project/script/provider names (not raw ids)."""
+        t_logs = self.tables.request_logs
+        t_projects = self.tables.projects
+        t_routes = self.tables.routes
+        t_providers = self.tables.providers
+
+        sql = f"""
+        SELECT
+          l.id,
+          l.created_at,
+          p.code AS project_code,
+          p.name AS project_name,
+          r.caller_script,
+          l.function_key,
+          r.model_slot,
+          prov.code AS provider_code,
+          l.model,
+          l.status,
+          l.latency_ms,
+          l.route_stage,
+          l.is_fallback,
+          l.deployment_code,
+          l.api_key_source,
+          l.http_status,
+          l.error_class,
+          l.error_message,
+          l.route_suspended_skip,
+          l.from_recovery_cache,
+          l.prompt_tokens,
+          l.completion_tokens,
+          l.total_tokens,
+          l.cost
+        FROM `{t_logs}` l
+        JOIN `{t_projects}` p ON p.id = l.project_id
+        JOIN `{t_routes}` r ON r.id = l.route_id
+        JOIN `{t_providers}` prov ON prov.id = l.provider_id
+        WHERE 1=1
+        """
+        params: List[Any] = []
+        if project_code:
+            sql += " AND p.code = %s"
+            params.append(project_code)
+        if caller_script:
+            sql += " AND r.caller_script = %s"
+            params.append(caller_script)
+        if since_id is not None:
+            sql += " AND l.id > %s"
+            params.append(since_id)
+            sql += " ORDER BY l.id ASC"
+        else:
+            sql += " ORDER BY l.id DESC"
+        sql += " LIMIT %s"
+        params.append(max(1, min(int(limit), 500)))
+
+        cursor.execute(sql, tuple(params))
+        rows = list(cursor.fetchall() or [])
+        if since_id is None:
+            return rows
+        rows.reverse()
+        return rows
+
+    def load_log_scripts(
+        self,
+        cursor: Any,
+        *,
+        project_code: Optional[str] = None,
+    ) -> List[dict]:
+        """Distinct caller_script values seen in request logs (with last activity)."""
+        t_logs = self.tables.request_logs
+        t_projects = self.tables.projects
+        t_routes = self.tables.routes
+
+        sql = f"""
+        SELECT
+          r.caller_script,
+          MAX(l.id) AS last_id,
+          MAX(l.created_at) AS last_at,
+          COUNT(*) AS log_count
+        FROM `{t_logs}` l
+        JOIN `{t_projects}` p ON p.id = l.project_id
+        JOIN `{t_routes}` r ON r.id = l.route_id
+        WHERE 1=1
+        """
+        params: List[Any] = []
+        if project_code:
+            sql += " AND p.code = %s"
+            params.append(project_code)
+        sql += " GROUP BY r.caller_script ORDER BY last_id DESC"
+        cursor.execute(sql, tuple(params))
         return list(cursor.fetchall() or [])
 
     def insert_log(self, cursor: Any, log: LogInsert) -> None:

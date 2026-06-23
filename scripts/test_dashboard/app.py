@@ -5,31 +5,23 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any, Dict, Generator, List, Optional
+
+import mysql.connector
+from mysql.connector import Error as MySQLError
 
 _log = logging.getLogger("uvicorn.error")
-_DOTENV_WARNED = False
-_ENV_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _load_env() -> None:
-    """Load .env from repo root. Called on import and before API reads keys."""
-    global _DOTENV_WARNED
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        if not _DOTENV_WARNED:
-            _log.warning(
-                'python-dotenv not installed — .env is ignored. '
-                'Run: pip install -e ".[web]"'
-            )
-            _DOTENV_WARNED = True
-        return
-    for name in (".env", ".env.local"):
-        path = _ENV_ROOT / name
-        if path.is_file():
-            load_dotenv(path, override=True)
+    """Reload .env from repo root / cwd (same paths as llm_connector.env)."""
+    from llm_connector.env import ensure_env_loaded
+
+    ensure_env_loaded(override=True, force=True)
 
 
 _load_env()
@@ -59,6 +51,35 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 _adapter = MysqlLlmAdapter()
 
 
+@contextmanager
+def _dashboard_cursor() -> Generator[Any, None, None]:
+    """Separate MySQL connection per HTTP request (safe under FastAPI thread pool)."""
+    cfg = get_llm_db_config()
+    kwargs = dict(cfg)
+    kwargs["charset"] = "utf8mb4"
+    kwargs["use_pure"] = True
+    kwargs["connection_timeout"] = int(os.getenv("LLM_DB_CONNECT_TIMEOUT", "10"))
+    conn = None
+    cur = None
+    try:
+        conn = mysql.connector.connect(**kwargs)
+        cur = conn.cursor(buffered=True, dictionary=True)
+        yield cur
+    except MySQLError as e:
+        raise HTTPException(503, f"{_db_unavailable_detail()} ({e})") from e
+    finally:
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception:
+                pass
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def _db_unavailable_detail() -> str:
     cfg = get_llm_db_config()
     return (
@@ -72,7 +93,11 @@ def _route_column_key(route: RouteRow) -> str:
 
 
 def _stage_to_dict(route: RouteRow, stage: RouteStageRow) -> Dict[str, Any]:
-    key_info = resolve_key_display(route, stage.provider)
+    key_info = resolve_key_display(
+        route,
+        stage.provider,
+        stage_api_key_env=stage.api_key_env,
+    )
     return {
         "stage": stage.stage,
         "provider_code": stage.provider.code,
@@ -142,6 +167,18 @@ class TestScriptRequest(BaseModel):
     caller_script: str
 
 
+def _serialize_log_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for key, value in row.items():
+        if isinstance(value, (datetime, date)):
+            out[key] = value.isoformat(sep=" ", timespec="seconds")
+        elif isinstance(value, Decimal):
+            out[key] = float(value)
+        else:
+            out[key] = value
+    return out
+
+
 class TestRouteResult(BaseModel):
     route_id: int
     function_key: str
@@ -163,13 +200,53 @@ def index() -> FileResponse:
 
 @app.get("/api/projects")
 def list_projects() -> List[Dict[str, Any]]:
-    cur = get_cursor()
-    if cur is None:
-        raise HTTPException(503, _db_unavailable_detail())
-    try:
+    with _dashboard_cursor() as cur:
         return _adapter.load_projects(cur)
-    finally:
-        cur.close()
+
+
+@app.get("/api/log-scripts")
+def list_log_scripts(
+    project_code: Optional[str] = Query(None),
+) -> List[Dict[str, Any]]:
+    with _dashboard_cursor() as cur:
+        rows = _adapter.load_log_scripts(cur, project_code=project_code or None)
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            last_at = item.get("last_at")
+            if isinstance(last_at, (datetime, date)):
+                item["last_at"] = last_at.isoformat(sep=" ", timespec="seconds")
+            out.append(item)
+        return out
+
+
+@app.get("/api/logs")
+def list_logs(
+    project_code: Optional[str] = Query(None),
+    caller_script: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    since_id: Optional[int] = Query(None, ge=1),
+) -> Dict[str, Any]:
+    with _dashboard_cursor() as cur:
+        rows = _adapter.load_request_logs(
+            cur,
+            project_code=project_code or None,
+            caller_script=caller_script or None,
+            limit=limit,
+            since_id=since_id,
+        )
+        items = [_serialize_log_row(r) for r in rows]
+        max_id = max((int(r["id"]) for r in items), default=since_id or 0)
+        newest_at = items[0]["created_at"] if items else None
+        return {
+            "items": items,
+            "count": len(items),
+            "max_id": max_id,
+            "newest_at": newest_at,
+            "project_code": project_code,
+            "caller_script": caller_script,
+            "fetched_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+        }
 
 
 @app.get("/api/routes")
@@ -177,16 +254,11 @@ def list_routes(
     project_code: str = Query("ailenta_parser"),
 ) -> Dict[str, Any]:
     _load_env()
-    cur = get_cursor()
-    if cur is None:
-        raise HTTPException(503, _db_unavailable_detail())
-    try:
+    with _dashboard_cursor() as cur:
         routes = _adapter.load_routes_overview(cur, project_code=project_code)
         payload = _build_table_payload(routes)
         payload["project_code"] = project_code
         return payload
-    finally:
-        cur.close()
 
 
 @app.post("/api/test-script")

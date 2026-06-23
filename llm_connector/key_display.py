@@ -6,6 +6,9 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING, Optional, TypedDict
 
+from llm_connector.env import ensure_env_loaded
+from llm_connector.keys import _env_candidates
+
 if TYPE_CHECKING:
     from llm_connector.models import ProviderRow, RouteRow
 
@@ -26,26 +29,34 @@ def mask_key(value: str) -> str:
     return f"{value[:4]}…{value[-4:]}"
 
 
-def resolve_key_display(route: "RouteRow", provider: "ProviderRow") -> KeyDisplayInfo:
+def resolve_key_display(
+    route: "RouteRow",
+    provider: "ProviderRow",
+    *,
+    stage_api_key_env: Optional[str] = None,
+) -> KeyDisplayInfo:
     """
-    Resolve which key would be used (route_env beats shared_env) and return
-    display metadata without exposing the full secret.
+    Resolve which key would be used and return display metadata without exposing
+    the full secret. Uses the same candidate order as resolve_api_key().
     """
-    if route.api_key_env:
-        val = os.getenv(route.api_key_env, "").strip()
+    ensure_env_loaded()
+
+    for source, env_name in _env_candidates(
+        route, provider, stage_api_key_env=stage_api_key_env
+    ):
+        val = os.getenv(env_name, "").strip()
+        label = "персональный" if source == "route_env" else "общий"
         return KeyDisplayInfo(
-            source="route_env",
-            label="персональный",
-            env_name=route.api_key_env,
+            source=source,
+            label=label,
+            env_name=env_name,
             masked_value=mask_key(val) if val else None,
             is_set=bool(val),
         )
-    env_name = provider.shared_api_key_env or ""
-    val = os.getenv(env_name, "").strip() if env_name else ""
     return KeyDisplayInfo(
         source="shared_env",
         label="общий",
-        env_name=env_name or None,
-        masked_value=mask_key(val) if val else None,
-        is_set=bool(val),
+        env_name=None,
+        masked_value=None,
+        is_set=False,
     )
