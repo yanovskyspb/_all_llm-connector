@@ -136,7 +136,7 @@
 
 Миграции: `000` → `001` → `002` → `003` → `004` → **`005`** (openrouter_usa, is_enabled) → **`006`** (stage chains) → **`007`** (pre-list funnel) → **`009`** (восстановление model slug на стадиях replicate из stage 0; миграция `008` ошибочная, не применять).
 
-**Replicate:** тот же `primary_model` на всех стадиях (например [`openai/gpt-5-mini`](https://replicate.com/openai/gpt-5-mini)). Вызов идёт через **нативный Predictions API** (`pip install replicate`), не через `openai-proxy.replicate.com` — прокси для официальных моделей отдаёт 503.
+**Replicate:** тот же `primary_model` на всех стадиях (например [`openai/gpt-5-mini`](https://replicate.com/openai/gpt-5-mini)). Вызов через **HTTP Predictions API** (`httpx`), без пакета `replicate` (несовместим с Python 3.14).
 
 ### Фаза 2 (заглушки)
 

@@ -25,16 +25,6 @@ def main() -> int:
     print("Python:", sys.executable)
     print("llm_connector:", Path(__import__("llm_connector").__file__).parent)
 
-    try:
-        import replicate  # noqa: F401
-
-        print("replicate package: OK", replicate.__version__ if hasattr(replicate, "__version__") else "")
-    except ImportError:
-        print("FAIL: package 'replicate' not installed in THIS python.")
-        print("Fix:  pip install replicate")
-        print("      or pip install -e P:\\_all_llm-connector")
-        return 1
-
     from llm_connector import MysqlLlmAdapter, complete, get_cursor
     from llm_connector.env import ensure_env_loaded
 

@@ -50,15 +50,6 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    try:
-        import replicate  # noqa: F401
-    except ImportError:
-        print("FAIL: package 'replicate' not installed in this Python.")
-        print(f"       {sys.executable}")
-        print("Fix:   pip install replicate")
-        print("       pip install -e .   (from llm-connector repo root)")
-        return 1
-
     from llm_connector.env import ensure_env_loaded
 
     ensure_env_loaded(override=True, force=True)
@@ -96,7 +87,7 @@ def main() -> int:
         print(f"WARN account API: {type(e).__name__}: {e}")
 
     print()
-    print("Calling replicate.run() (same path as llm_connector provider 'replicate')...")
+    print("Calling Replicate HTTP API (same path as llm_connector)...")
 
     t0 = time.perf_counter()
     try:

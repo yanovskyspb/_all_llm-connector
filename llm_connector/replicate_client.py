@@ -1,13 +1,30 @@
 # -*- coding: utf-8 -*-
-"""Native Replicate Predictions API (official models, e.g. openai/gpt-5-mini)."""
+"""Replicate Predictions HTTP API (no replicate SDK — works on Python 3.14+)."""
 
 from __future__ import annotations
 
 import json
-import os
+import time
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
+
+import httpx
 
 from llm_connector.completion_params import model_requires_max_completion_tokens
+
+REPLICATE_API_BASE = "https://api.replicate.com/v1"
+_POLL_STATUSES = frozenset({"starting", "processing"})
+
+
+def model_predictions_url(model: str) -> str:
+    """Official/community model: owner/name → POST /v1/models/{owner}/{name}/predictions."""
+    slug = model.strip()
+    if slug.endswith(":free"):
+        slug = slug.rsplit(":", 1)[0]
+    if "/" not in slug:
+        raise ValueError(f"Invalid Replicate model id: {model!r}")
+    owner, name = slug.split("/", 1)
+    return f"{REPLICATE_API_BASE}/models/{quote(owner, safe='')}/{quote(name, safe='')}/predictions"
 
 
 def messages_to_replicate_input(
@@ -57,6 +74,30 @@ def collect_replicate_output(output: Any) -> str:
     return str(output)
 
 
+def _poll_prediction(
+    client: httpx.Client,
+    *,
+    api_key: str,
+    data: Dict[str, Any],
+    deadline: float,
+) -> Dict[str, Any]:
+    poll_url = (data.get("urls") or {}).get("get")
+    if not poll_url:
+        return data
+    headers = {"Authorization": f"Bearer {api_key}"}
+    while data.get("status") in _POLL_STATUSES:
+        if time.time() >= deadline:
+            raise TimeoutError(
+                f"Replicate prediction {data.get('id')!r} timed out (status={data.get('status')!r})"
+            )
+        time.sleep(1.0)
+        resp = client.get(poll_url, headers=headers)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Replicate poll HTTP {resp.status_code}: {resp.text[:500]}")
+        data = resp.json()
+    return data
+
+
 def run_replicate_prediction(
     *,
     model: str,
@@ -67,38 +108,49 @@ def run_replicate_prediction(
     timeout_sec: int,
 ) -> Tuple[str, Dict[str, Any]]:
     """
-    Call Replicate Predictions API. Returns (text, raw_payload dict for logging).
+    Call Replicate Predictions API via HTTP. Returns (text, raw_payload dict for logging).
     """
-    try:
-        import replicate
-    except ImportError as e:
-        raise RuntimeError(
-            "Provider 'replicate' requires the replicate package: pip install replicate"
-        ) from e
-
     inp = messages_to_replicate_input(
         messages,
         model=model,
         max_tokens=max_tokens,
         response_format=response_format,
     )
-    prev = os.environ.get("REPLICATE_API_TOKEN")
-    os.environ["REPLICATE_API_TOKEN"] = api_key
-    try:
-        client = replicate.Client(api_token=api_key, timeout=timeout_sec)
-        output = client.run(model, input=inp)
-    finally:
-        if prev is None:
-            os.environ.pop("REPLICATE_API_TOKEN", None)
-        else:
-            os.environ["REPLICATE_API_TOKEN"] = prev
+    url = model_predictions_url(model)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Prefer": "wait",
+    }
+    deadline = time.monotonic() + timeout_sec
+    timeout = httpx.Timeout(timeout_sec, connect=30.0)
 
-    text = collect_replicate_output(output).strip()
-    raw: Dict[str, Any] = {"input": inp, "output": text}
+    with httpx.Client(timeout=timeout) as client:
+        resp = client.post(url, headers=headers, json={"input": inp})
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Replicate HTTP {resp.status_code}: {resp.text[:500]}")
+        data = resp.json()
+        if data.get("status") in _POLL_STATUSES:
+            data = _poll_prediction(
+                client, api_key=api_key, data=data, deadline=deadline
+            )
+
+    status = data.get("status")
+    if status == "failed":
+        err = data.get("error") or "prediction failed"
+        raise RuntimeError(f"Replicate prediction failed: {err}")
+    if status != "succeeded":
+        raise RuntimeError(f"Replicate prediction ended with status={status!r}")
+
+    text = collect_replicate_output(data.get("output")).strip()
+    raw: Dict[str, Any] = {
+        "input": inp,
+        "output": text,
+        "prediction_id": data.get("id"),
+        "status": status,
+    }
     try:
-        raw["output_repr"] = json.loads(
-            json.dumps(output, ensure_ascii=False, default=str)
-        )
+        raw["prediction"] = json.loads(json.dumps(data, ensure_ascii=False, default=str))
     except Exception:
-        raw["output_repr"] = str(output)
+        raw["prediction"] = str(data)
     return text, raw
