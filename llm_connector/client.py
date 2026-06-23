@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -13,6 +14,7 @@ import httpx
 from openai import OpenAI
 
 from llm_connector.adapter.mysql import MysqlLlmAdapter
+from llm_connector.completion_params import build_chat_completion_kwargs
 from llm_connector.db_connection import commit_conn, fresh_cursor
 from llm_connector.exceptions import (
     MissingApiKeyError,
@@ -40,6 +42,7 @@ from llm_connector.recovery import (
     write_slot_error,
     write_slot_success,
 )
+from llm_connector.replicate_client import run_replicate_prediction
 from llm_connector.usage import parse_usage, response_to_raw_json
 
 _streak: Dict[int, int] = {}
@@ -303,6 +306,130 @@ def _run_db(cursor: Any, commit: bool, fn) -> bool:
         return False
 
 
+def _call_replicate_stage(
+    *,
+    adapter: MysqlLlmAdapter,
+    cursor: Any,
+    chain: RouteChain,
+    stage_row: RouteStageRow,
+    provider: ProviderRow,
+    model: str,
+    messages: List[Dict[str, str]],
+    api_key: str,
+    api_key_source: str,
+    explicit_key: Optional[str],
+    stage_name: str,
+    is_fallback: bool,
+    deployment_code: str,
+    function_key: str,
+    max_tokens: Optional[int],
+    commit: bool,
+) -> Optional[CompleteResult]:
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, chain.max_retries + 1):
+        t0 = time.perf_counter()
+        try:
+            text, raw = run_replicate_prediction(
+                model=model,
+                api_key=api_key,
+                messages=messages,
+                max_tokens=max_tokens,
+                response_format=chain.response_format,
+                timeout_sec=chain.timeout_sec,
+            )
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            if not text:
+                raise ValueError("Empty content from Replicate")
+            raw_json = json.dumps(raw, ensure_ascii=False, default=str)
+            log_uuid = str(uuid.uuid4())
+            log_row = LogInsert(
+                project_id=chain.project_id,
+                function_key=function_key,
+                route_id=stage_row.id,
+                provider_id=provider.id,
+                model=model,
+                is_fallback=is_fallback,
+                latency_ms=latency_ms,
+                deployment_code=deployment_code,
+                api_key_source=api_key_source,
+                status="success",
+                http_status=200,
+                error_class=None,
+                error_message=None,
+                route_suspended_skip=False,
+                from_recovery_cache=False,
+                route_stage=stage_name,
+                external_request_id=None,
+                prompt_tokens=None,
+                completion_tokens=None,
+                total_tokens=None,
+                cost=None,
+                provider_raw_json=raw_json,
+                request_uuid=log_uuid,
+            )
+            _run_db(cursor, commit, lambda cur: adapter.insert_log(cur, log_row))
+            return CompleteResult(
+                content=text,
+                route_id=stage_row.id,
+                provider_code=provider.code,
+                model=model,
+                route_stage=stage_name,
+                is_fallback=is_fallback,
+                request_uuid=log_uuid,
+                prompt_tokens=None,
+                completion_tokens=None,
+                total_tokens=None,
+                cost=None,
+                latency_ms=latency_ms,
+                api_key_source=api_key_source,
+                external_request_id=None,
+                raw_response=raw,
+            )
+        except Exception as e:
+            last_exc = e
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            if explicit_key and _is_auth_error(e):
+                _log_error(
+                    adapter,
+                    cursor,
+                    chain,
+                    stage_row,
+                    provider,
+                    model,
+                    is_fallback,
+                    stage_name,
+                    deployment_code,
+                    function_key,
+                    api_key_source,
+                    latency_ms,
+                    e,
+                    commit,
+                )
+                raise
+            if attempt < chain.max_retries:
+                time.sleep(chain.retry_delay_sec)
+                continue
+            _log_error(
+                adapter,
+                cursor,
+                chain,
+                stage_row,
+                provider,
+                model,
+                is_fallback,
+                stage_name,
+                deployment_code,
+                function_key,
+                api_key_source,
+                latency_ms,
+                e,
+                commit,
+            )
+            _record_failure(adapter, cursor, chain, str(e), commit=commit)
+            return None
+    return None
+
+
 def _call_stage(
     *,
     adapter: MysqlLlmAdapter,
@@ -323,6 +450,28 @@ def _call_stage(
     temperature_override: Optional[float],
     commit: bool,
 ) -> Optional[CompleteResult]:
+    max_tokens = max_tokens_override if max_tokens_override is not None else chain.max_tokens
+
+    if provider.code == "replicate":
+        return _call_replicate_stage(
+            adapter=adapter,
+            cursor=cursor,
+            chain=chain,
+            stage_row=stage_row,
+            provider=provider,
+            model=model,
+            messages=messages,
+            api_key=api_key,
+            api_key_source=api_key_source,
+            explicit_key=explicit_key,
+            stage_name=stage_name,
+            is_fallback=is_fallback,
+            deployment_code=deployment_code,
+            function_key=function_key,
+            max_tokens=max_tokens,
+            commit=commit,
+        )
+
     verify = _verify_ssl(chain, provider)
     max_tokens = max_tokens_override if max_tokens_override is not None else chain.max_tokens
     temperature = (
@@ -331,16 +480,15 @@ def _call_stage(
     http_client = httpx.Client(verify=verify)
     client = OpenAI(api_key=api_key, base_url=provider.base_url, http_client=http_client)
 
-    kwargs: Dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "timeout": chain.timeout_sec,
-    }
-    if max_tokens is not None:
-        kwargs["max_tokens"] = max_tokens
-    if chain.response_format == "json_object":
-        kwargs["response_format"] = {"type": "json_object"}
+    kwargs = build_chat_completion_kwargs(
+        provider=provider,
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        timeout_sec=chain.timeout_sec,
+        max_tokens=max_tokens,
+        response_format=chain.response_format,
+    )
 
     last_exc: Optional[Exception] = None
     for attempt in range(1, chain.max_retries + 1):

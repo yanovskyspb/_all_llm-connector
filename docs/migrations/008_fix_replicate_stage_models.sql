@@ -1,0 +1,5 @@
+-- DEPRECATED — do not apply.
+-- Earlier assumption (OpenRouter slugs invalid on Replicate) was wrong for models like
+-- openai/gpt-5-mini (https://replicate.com/openai/gpt-5-mini).
+-- HTTP 503 is fixed in llm_connector.client (max_completion_tokens for GPT-5/o-series).
+-- If this migration was applied, run 009_restore_replicate_chain_models.sql.

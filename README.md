@@ -75,7 +75,7 @@ Copy [`.env.example`](.env.example) to `.env` in **this repo root**. All provide
 | `API_ARTEMOX_KEY` | Artemox key |
 | `API_OPENAI_KEY` | OpenAI key |
 | `API_ROUTERAI_KEY` | [RouterAI](https://routerai.ru/) key |
-| `API_REPLICATE_KEY` | [Replicate](https://replicate.com/account/api-tokens) API token (`r8_…`; OpenAI-compatible proxy) |
+| `API_REPLICATE_KEY` | [Replicate](https://replicate.com/account/api-tokens) API token (`r8_…`; native Predictions API via `replicate` package) |
 | `LLM_DEPLOYMENT_CODE` | Written to `llm_request_logs.deployment_code` (default `internal`) |
 
 Phase 2 (external VPS): see `docs/ARCHITECTURE.md` — Tailscale, replica, outbox.
