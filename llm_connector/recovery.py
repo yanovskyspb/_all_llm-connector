@@ -85,10 +85,77 @@ def get_slot_content(data: Optional[Dict[str, Any]], model_slot: int) -> Optiona
         return None
     slots = data.get("slots") or {}
     slot = slots.get(str(model_slot)) or {}
-    if slot.get("status") == _SLOT_SUCCESS:
+    if slot.get("status") == _SLOT_SUCCESS and slot.get("content_kind") != "image_file":
         content = slot.get("content")
         return str(content) if content is not None else None
     return None
+
+
+def get_slot_image_bytes(
+    data: Optional[Dict[str, Any]],
+    model_slot: int,
+    recovery_json_path: Path,
+) -> Optional[bytes]:
+    if not data:
+        return None
+    slots = data.get("slots") or {}
+    slot = slots.get(str(model_slot)) or {}
+    if slot.get("status") != _SLOT_SUCCESS or slot.get("content_kind") != "image_file":
+        return None
+    img_path = recovery_json_path.with_suffix(".img")
+    if not img_path.is_file():
+        return None
+    try:
+        return img_path.read_bytes()
+    except OSError:
+        return None
+
+
+def write_slot_image_success(
+    path: Path,
+    *,
+    project_code: str,
+    caller_script: str,
+    function_key: str,
+    entity_id: str,
+    prompt_fingerprint_value: str,
+    model_slot: int,
+    provider: str,
+    model: str,
+    request_id: Optional[str],
+    image_bytes: bytes,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img_path = path.with_suffix(".img")
+    img_path.write_bytes(image_bytes)
+    existing = {}
+    if path.is_file():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            existing = {}
+    if not isinstance(existing, dict):
+        existing = {}
+    slots = existing.get("slots") if isinstance(existing.get("slots"), dict) else {}
+    slots[str(model_slot)] = {
+        "status": _SLOT_SUCCESS,
+        "content_kind": "image_file",
+        "provider": provider,
+        "model": model,
+        "request_id": request_id,
+        "created_at": _utc_now_iso(),
+    }
+    doc = {
+        "project_code": project_code,
+        "caller_script": caller_script,
+        "function_key": function_key,
+        "entity_id": entity_id,
+        "prompt_fingerprint": prompt_fingerprint_value,
+        "updated_at": _utc_now_iso(),
+        "slots": slots,
+    }
+    _atomic_write_json(path, doc)
 
 
 def write_slot_success(

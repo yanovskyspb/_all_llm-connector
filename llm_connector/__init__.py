@@ -11,14 +11,14 @@ from llm_connector.exceptions import (
     RouteSuspendedError,
 )
 from llm_connector.keys import resolve_api_key
-from llm_connector.models import CompleteImageResult, CompleteResult
+from llm_connector.models import CompleteResult, ImageCompleteResult
 from llm_connector.db_config import get_llm_db_config
 from llm_connector.db_connection import close_conn, get_conn, get_cursor
 from llm_connector.tables import LlmTableNames
 
 __all__ = [
-    "CompleteImageResult",
     "CompleteResult",
+    "ImageCompleteResult",
     "close_conn",
     "get_cursor",
     "get_llm_db_config",

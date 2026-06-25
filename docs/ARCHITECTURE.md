@@ -113,7 +113,8 @@
 | Маршрут | Стадий | Примечание |
 |---------|--------|------------|
 | `prompt_meta_extract.py` / `extract` | 2 | Только openrouter: primary + `openrouter/free` |
-| `generate_images_for_articles.ipynb` | 1 (будущее) | Только vsegpt — см. [`generate_images_for_articles.md`](generate_images_for_articles.md) |
+| `process_articles.ipynb` / `default` | 4 | openrouter_usa → replicate → routerai → vsegpt (без openrouter) |
+| `generate_images_for_articles.ipynb` / `default` | 1 | openrouter_usa · `sourceful/riverflow-v2-fast` — см. [`generate_images_for_articles.md`](generate_images_for_articles.md) |
 
 **Пропуск стадии без `failure_count`:**
 
@@ -134,7 +135,11 @@
 
 **Физически:** отдельная БД **`_llm_connector`** на том же MySQL-сервере (не в `ailenta_parser`).
 
-Миграции: `000` → `001` → `002` → `003` → `004` → **`005`** (openrouter_usa, is_enabled) → **`006`** (stage chains) → **`007`** (pre-list funnel) → **`009`** (восстановление model slug на стадиях replicate из stage 0; миграция `008` ошибочная, не применять).
+Миграции: `000` → `001` → `002` → `003` → `004` → **`005`** (openrouter_usa, is_enabled) → **`006`** (stage chains) → **`007`** (pre-list funnel) → **`009`** (восстановление model slug на стадиях replicate из stage 0; миграция `008` ошибочная, не применять) → **`010`** (article funnel routes).
+
+### Image API
+
+`complete_image()` в `llm_connector/image_client.py` — маршрутизация и логирование для генерации изображений. Сейчас поддерживается провайдер **`openrouter_usa`** (POST `/api/v1/images`). Возвращает `ImageCompleteResult` с `image_bytes`. Recovery: бинарный файл `.img` рядом с JSON в `runtime/llm_recovery/`.
 
 **Replicate:** тот же `primary_model` на всех стадиях (например [`openai/gpt-5-mini`](https://replicate.com/openai/gpt-5-mini)). Вызов через **HTTP Predictions API** (`httpx`), без пакета `replicate` (несовместим с Python 3.14).
 

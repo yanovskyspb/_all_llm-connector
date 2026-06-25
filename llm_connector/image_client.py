@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Image generation with DB routing and fallback chain (OpenRouter Images API)."""
+"""Image generation with DB routing, logging, recovery."""
 
 from __future__ import annotations
 
 import base64
 import json
-import logging
 import os
 import time
 import uuid
@@ -23,7 +22,6 @@ from llm_connector.client import (
     _run_db,
     _stages_for_attempt,
     _streak,
-    _verify_ssl,
 )
 from llm_connector.db_connection import commit_conn, fresh_cursor
 from llm_connector.exceptions import MissingApiKeyError, RouteSuspendedError
@@ -31,17 +29,65 @@ from llm_connector.keys import resolve_api_key
 from llm_connector.models import (
     STATUS_SKIPPED_NO_KEY,
     STATUS_SKIPPED_PROVIDER_DISABLED,
-    CompleteImageResult,
+    STATUS_SKIPPED_UNSUPPORTED,
+    ImageCompleteResult,
     LogInsert,
     ProviderRow,
     RouteChain,
     RouteStageRow,
+    STAGE_PRIMARY,
+)
+from llm_connector.recovery import (
+    get_slot_image_bytes,
+    load_recovery,
+    maybe_cleanup_recovery_root,
+    prompt_fingerprint,
+    recovery_path,
+    write_slot_error,
+    write_slot_image_success,
 )
 
-logger = logging.getLogger("llm_connector.image_client")
+OPENROUTER_IMAGES_URL = "https://openrouter.ai/api/v1/images"
+IMAGE_WIDTH = 1344
+IMAGE_HEIGHT = 768
 
-_DEFAULT_IMAGE_SIZE = "1344x768"
 StageTuple = Tuple[str, ProviderRow, str, bool, RouteStageRow]
+
+
+def openrouter_image_payload(model: str, prompt: str) -> Dict[str, Any]:
+    base: Dict[str, Any] = {
+        "model": model,
+        "prompt": prompt,
+        "n": 1,
+    }
+    if model.startswith("sourceful/"):
+        base["resolution"] = "1K"
+        base["aspect_ratio"] = "16:9"
+    else:
+        base["size"] = f"{IMAGE_WIDTH}x{IMAGE_HEIGHT}"
+        if model.startswith("black-forest-labs/"):
+            base["output_format"] = "png"
+    return base
+
+
+def _download_url(url: str, *, timeout_sec: int) -> bytes:
+    timeout = httpx.Timeout(timeout_sec, connect=30.0)
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        with client.stream("GET", url) as resp:
+            resp.raise_for_status()
+            return b"".join(resp.iter_bytes())
+
+
+def _parse_openrouter_image_response(data: Dict[str, Any], *, timeout_sec: int) -> bytes:
+    items = data.get("data") or []
+    if not items:
+        raise ValueError(f"OpenRouter images API returned no data: {data!r}")
+    item = items[0]
+    if item.get("b64_json"):
+        return base64.b64decode(item["b64_json"])
+    if item.get("url"):
+        return _download_url(str(item["url"]), timeout_sec=timeout_sec)
+    raise ValueError(f"OpenRouter image item missing b64_json/url: {item!r}")
 
 
 def complete_image(
@@ -57,15 +103,8 @@ def complete_image(
     entity_id: Optional[str] = None,
     recovery_root: Optional[str] = None,
     commit: bool = True,
-) -> Optional[CompleteImageResult]:
-    """
-    Run one image generation for a configured route chain.
-
-    Returns None if all retries/stages fail. Raises RouteSuspendedError if route suspended.
-    Recovery cache is not used for binary image payloads.
-    """
-    del entity_id, recovery_root  # reserved for future file-based image recovery
-
+) -> Optional[ImageCompleteResult]:
+    """Run image generation for a configured route chain. Returns None if all stages fail."""
     chain = adapter.load_route_chain(
         cursor,
         project_code=project_code,
@@ -79,6 +118,26 @@ def complete_image(
         )
 
     fk = function_key or "default"
+    fingerprint = prompt_fingerprint(prompt)
+    rec_path = None
+    if entity_id and recovery_root:
+        maybe_cleanup_recovery_root(recovery_root)
+        rec_path = recovery_path(recovery_root, project_code, caller_script, fk, str(entity_id))
+        cached = load_recovery(rec_path, fingerprint)
+        cached_bytes = get_slot_image_bytes(cached, model_slot, rec_path)
+        if cached_bytes is not None:
+            return ImageCompleteResult(
+                image_bytes=cached_bytes,
+                route_id=chain.head_route_id,
+                provider_code=chain.provider.code,
+                model=chain.primary_model,
+                route_stage=STAGE_PRIMARY,
+                is_fallback=False,
+                request_uuid=str(uuid.uuid4()),
+                from_recovery_cache=True,
+                api_key_source="explicit" if api_key else "shared_env",
+            )
+
     deployment_code = os.getenv("LLM_DEPLOYMENT_CODE", "internal")
     explicit_key = api_key.strip() if api_key and api_key.strip() else None
 
@@ -102,6 +161,24 @@ def complete_image(
                 fk,
                 STATUS_SKIPPED_PROVIDER_DISABLED,
                 "Provider disabled in database",
+                commit=commit,
+            )
+            continue
+
+        if provider.code != "openrouter_usa":
+            _log_skip(
+                adapter,
+                cursor,
+                chain,
+                stage_row,
+                provider,
+                model,
+                is_fallback,
+                stage_name,
+                deployment_code,
+                fk,
+                STATUS_SKIPPED_UNSUPPORTED,
+                f"Image provider not supported: {provider.code}",
                 commit=commit,
             )
             continue
@@ -132,7 +209,7 @@ def complete_image(
             )
             continue
 
-        result = _call_image_stage(
+        result = _call_openrouter_usa_image(
             adapter=adapter,
             cursor=cursor,
             chain=chain,
@@ -156,62 +233,42 @@ def complete_image(
                 commit,
                 lambda cur: adapter.reset_route_failure(cur, chain.head_route_id),
             )
+            if rec_path is not None and entity_id:
+                write_slot_image_success(
+                    rec_path,
+                    project_code=project_code,
+                    caller_script=caller_script,
+                    function_key=fk,
+                    entity_id=str(entity_id),
+                    prompt_fingerprint_value=fingerprint,
+                    model_slot=model_slot,
+                    provider=result.provider_code,
+                    model=result.model,
+                    request_id=result.external_request_id,
+                    image_bytes=result.image_bytes,
+                )
             return result
         last_error = RuntimeError(f"stage {stage_name} failed")
 
     streak = _streak.get(chain.head_route_id, 0) + 1
     _streak[chain.head_route_id] = streak
-    if last_error:
-        logger.debug("complete_image failed: %s", last_error)
+
+    if rec_path is not None and entity_id and last_error:
+        write_slot_error(
+            rec_path,
+            project_code=project_code,
+            caller_script=caller_script,
+            function_key=fk,
+            entity_id=str(entity_id),
+            prompt_fingerprint_value=fingerprint,
+            model_slot=model_slot,
+            error_class=type(last_error).__name__,
+            error_message=str(last_error),
+        )
     return None
 
 
-def _openrouter_images_url(provider: ProviderRow) -> str:
-    base = (provider.base_url or "").rstrip("/")
-    if base.endswith("/images"):
-        return base
-    return f"{base}/images"
-
-
-def _openrouter_image_payload(model: str, prompt: str) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {"model": model, "prompt": prompt, "n": 1}
-    if model.startswith("sourceful/"):
-        payload["resolution"] = "1K"
-        payload["aspect_ratio"] = "16:9"
-    else:
-        payload["size"] = _DEFAULT_IMAGE_SIZE
-        if model.startswith("black-forest-labs/"):
-            payload["output_format"] = "png"
-    return payload
-
-
-def _download_url(url: str, *, verify: bool, timeout_sec: int) -> bytes:
-    timeout = httpx.Timeout(timeout_sec, connect=30.0)
-    with httpx.Client(timeout=timeout, verify=verify, follow_redirects=True) as client:
-        with client.stream("GET", url) as resp:
-            resp.raise_for_status()
-            return b"".join(resp.iter_bytes())
-
-
-def _parse_openrouter_image_response(
-    data: Dict[str, Any],
-    *,
-    verify: bool,
-    timeout_sec: int,
-) -> Tuple[bytes, Optional[float], Optional[str]]:
-    items = data.get("data") or []
-    if not items:
-        raise ValueError(f"OpenRouter image response missing data: {data!r}")
-
-    item = items[0]
-    if item.get("b64_json"):
-        return base64.b64decode(item["b64_json"]), None, None
-    if item.get("url"):
-        return _download_url(str(item["url"]), verify=verify, timeout_sec=timeout_sec), None, None
-    raise ValueError(f"OpenRouter image item missing b64_json/url: {item!r}")
-
-
-def _call_image_stage(
+def _call_openrouter_usa_image(
     *,
     adapter: MysqlLlmAdapter,
     cursor: Any,
@@ -228,54 +285,26 @@ def _call_image_stage(
     deployment_code: str,
     function_key: str,
     commit: bool,
-) -> Optional[CompleteImageResult]:
-    if provider.code not in ("openrouter", "openrouter_usa"):
-        _log_skip(
-            adapter,
-            cursor,
-            chain,
-            stage_row,
-            provider,
-            model,
-            is_fallback,
-            stage_name,
-            deployment_code,
-            function_key,
-            STATUS_SKIPPED_PROVIDER_DISABLED,
-            f"Image generation not implemented for provider {provider.code!r}",
-            commit=commit,
-        )
-        return None
-
-    verify = _verify_ssl(chain, provider)
-    url = _openrouter_images_url(provider)
-    payload = _openrouter_image_payload(model, prompt)
+) -> Optional[ImageCompleteResult]:
+    payload = openrouter_image_payload(model, prompt)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://ailenta.local/generate-images",
-        "X-Title": "llm_connector complete_image",
+        "HTTP-Referer": "https://ailenta.local/llm-connector",
+        "X-Title": "llm_connector image",
     }
     timeout = httpx.Timeout(chain.timeout_sec, connect=30.0)
 
-    last_exc: Optional[Exception] = None
     for attempt in range(1, chain.max_retries + 1):
         t0 = time.perf_counter()
         try:
-            with httpx.Client(timeout=timeout, verify=verify) as client:
-                resp = client.post(url, headers=headers, json=payload)
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.post(OPENROUTER_IMAGES_URL, headers=headers, json=payload)
             latency_ms = int((time.perf_counter() - t0) * 1000)
             if resp.status_code >= 400:
                 raise RuntimeError(f"OpenRouter HTTP {resp.status_code}: {resp.text[:500]}")
             data = resp.json()
-            image_bytes, _, _ = _parse_openrouter_image_response(
-                data,
-                verify=verify,
-                timeout_sec=chain.timeout_sec,
-            )
-            if not image_bytes:
-                raise ValueError("Empty image bytes from provider")
-
+            image_bytes = _parse_openrouter_image_response(data, timeout_sec=chain.timeout_sec)
             usage = data.get("usage") or {}
             cost = usage.get("cost")
             if cost is not None:
@@ -283,8 +312,6 @@ def _call_image_stage(
                     cost = float(cost)
                 except (TypeError, ValueError):
                     cost = None
-
-            ext_id = data.get("id")
             raw_json = json.dumps(data, ensure_ascii=False, default=str)
             log_uuid = str(uuid.uuid4())
             log_row = LogInsert(
@@ -304,7 +331,7 @@ def _call_image_stage(
                 route_suspended_skip=False,
                 from_recovery_cache=False,
                 route_stage=stage_name,
-                external_request_id=ext_id,
+                external_request_id=data.get("id"),
                 prompt_tokens=None,
                 completion_tokens=None,
                 total_tokens=None,
@@ -313,7 +340,7 @@ def _call_image_stage(
                 request_uuid=log_uuid,
             )
             _run_db(cursor, commit, lambda cur: adapter.insert_log(cur, log_row))
-            return CompleteImageResult(
+            return ImageCompleteResult(
                 image_bytes=image_bytes,
                 route_id=stage_row.id,
                 provider_code=provider.code,
@@ -324,11 +351,10 @@ def _call_image_stage(
                 cost=cost,
                 latency_ms=latency_ms,
                 api_key_source=api_key_source,
-                external_request_id=ext_id,
+                external_request_id=data.get("id"),
                 raw_response=data,
             )
         except Exception as e:
-            last_exc = e
             latency_ms = int((time.perf_counter() - t0) * 1000)
             if explicit_key and _is_auth_error(e):
                 _log_error(
