@@ -118,6 +118,23 @@ class RouteRow:
 
 
 @dataclass
+class CompleteImageResult:
+    image_bytes: bytes
+    route_id: int
+    provider_code: str
+    model: str
+    route_stage: str
+    is_fallback: bool
+    request_uuid: str
+    from_recovery_cache: bool = False
+    cost: Optional[float] = None
+    latency_ms: Optional[int] = None
+    api_key_source: str = "shared_env"
+    external_request_id: Optional[str] = None
+    raw_response: Any = None
+
+
+@dataclass
 class CompleteResult:
     content: str
     route_id: int

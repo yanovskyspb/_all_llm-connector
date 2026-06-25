@@ -3,6 +3,7 @@
 
 from llm_connector.adapter.mysql import MysqlLlmAdapter
 from llm_connector.client import complete, get_routes_for_caller, assert_bundle_not_suspended
+from llm_connector.image_client import complete_image
 from llm_connector.exceptions import (
     LlmConnectorError,
     MissingApiKeyError,
@@ -10,12 +11,13 @@ from llm_connector.exceptions import (
     RouteSuspendedError,
 )
 from llm_connector.keys import resolve_api_key
-from llm_connector.models import CompleteResult
+from llm_connector.models import CompleteImageResult, CompleteResult
 from llm_connector.db_config import get_llm_db_config
 from llm_connector.db_connection import close_conn, get_conn, get_cursor
 from llm_connector.tables import LlmTableNames
 
 __all__ = [
+    "CompleteImageResult",
     "CompleteResult",
     "close_conn",
     "get_cursor",
@@ -29,6 +31,7 @@ __all__ = [
     "RouteSuspendedError",
     "assert_bundle_not_suspended",
     "complete",
+    "complete_image",
     "get_routes_for_caller",
     "resolve_api_key",
 ]
